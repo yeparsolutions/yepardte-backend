@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     # Cifrado firma digital
     ENCRYPTION_KEY: str = ""
 
+    # Mercado Pago
+    MP_ACCESS_TOKEN: str = ""
+    MP_PUBLIC_KEY: str = ""
+    MP_WEBHOOK_SECRET: str = ""
+
+    # URL pública del backend (para webhooks MP)
+    BACKEND_URL: str = "https://yepardte-backend-production.up.railway.app"
+
     class Config:
         env_file = ".env"
 
