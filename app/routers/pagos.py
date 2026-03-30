@@ -115,7 +115,7 @@ async def crear_suscripcion(
             "transaction_amount": plan_info["precio"],
             "currency_id": "CLP",
         },
-        "back_url": f"{settings.FRONTEND_URL}/config?suscripcion=ok&plan={body.plan}",
+        "back_url": f"{settings.FRONTEND_URL}/config",
         "notification_url": f"{settings.BACKEND_URL}/api/pagos/webhook",
         "status": "pending",
         "metadata": {
