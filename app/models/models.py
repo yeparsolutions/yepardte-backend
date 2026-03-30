@@ -26,7 +26,7 @@ class Empresa(Base):
 
     # Firma digital cifrada (.pfx/.p12)
     firma_digital: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
-    firma_password: Mapped[str | None] = mapped_column(String(500), nullable=True)  # cifrado también
+    firma_password: Mapped[str | None] = mapped_column(String(500), nullable=True)
     firma_vencimiento: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # CAF (Código de Autorización de Folios) — guardado como XML cifrado
@@ -36,6 +36,7 @@ class Empresa(Base):
     # Plan
     plan: Mapped[str] = mapped_column(String(20), default="gratuito")
     docs_usados: Mapped[int] = mapped_column(Integer, default=0)
+    mp_suscripcion_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     tributario_completo: Mapped[bool] = mapped_column(Boolean, default=False)
     activo: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -44,6 +45,7 @@ class Empresa(Base):
     # Relaciones
     usuarios: Mapped[list["Usuario"]] = relationship("Usuario", back_populates="empresa", cascade="all, delete-orphan")
     documentos: Mapped[list["Documento"]] = relationship("Documento", back_populates="empresa", cascade="all, delete-orphan")
+    pagos: Mapped[list["Pago"]] = relationship("Pago", back_populates="empresa", cascade="all, delete-orphan")
 
 
 class Usuario(Base):
@@ -53,8 +55,8 @@ class Usuario(Base):
     empresa_id: Mapped[str] = mapped_column(ForeignKey("empresas.id"), index=True)
     nombre: Mapped[str] = mapped_column(String(200))
     email: Mapped[str | None] = mapped_column(String(200), nullable=True, unique=True, index=True)
-    password_hash: Mapped[str | None] = mapped_column(String(500), nullable=True)  # solo admin
-    pin_hash: Mapped[str | None] = mapped_column(String(500), nullable=True)        # solo vendedor
+    password_hash: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    pin_hash: Mapped[str | None] = mapped_column(String(500), nullable=True)
     rol: Mapped[str] = mapped_column(String(20), default="vendedor")  # admin | vendedor
     activo: Mapped[bool] = mapped_column(Boolean, default=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
@@ -70,9 +72,9 @@ class Documento(Base):
     empresa_id: Mapped[str] = mapped_column(ForeignKey("empresas.id"), index=True)
     vendedor_id: Mapped[str | None] = mapped_column(ForeignKey("usuarios.id"), nullable=True)
 
-    tipo: Mapped[str] = mapped_column(String(50))        # Boleta | Factura
-    tipo_code: Mapped[str] = mapped_column(String(5))    # 39 | 33
-    numero: Mapped[str] = mapped_column(String(20))      # B-001
+    tipo: Mapped[str] = mapped_column(String(50))
+    tipo_code: Mapped[str] = mapped_column(String(5))
+    numero: Mapped[str] = mapped_column(String(20))
     folio: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     receptor_nombre: Mapped[str] = mapped_column(String(200))
@@ -85,10 +87,9 @@ class Documento(Base):
     monto_iva: Mapped[int] = mapped_column(BigInteger, default=0)
     monto_total: Mapped[int] = mapped_column(BigInteger, default=0)
 
-    items: Mapped[str] = mapped_column(Text, default="[]")  # JSON string
-    estado: Mapped[str] = mapped_column(String(30), default="pendiente")  # pendiente | enviado | aceptado | rechazado
+    items: Mapped[str] = mapped_column(Text, default="[]")
+    estado: Mapped[str] = mapped_column(String(30), default="pendiente")
 
-    # Respuesta de DTECore/SII
     xml_firmado: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     track_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     sii_response: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -98,3 +99,19 @@ class Documento(Base):
 
     empresa: Mapped["Empresa"] = relationship("Empresa", back_populates="documentos")
     vendedor: Mapped["Usuario | None"] = relationship("Usuario", back_populates="documentos")
+
+
+class Pago(Base):
+    __tablename__ = "pagos"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    empresa_id: Mapped[str] = mapped_column(ForeignKey("empresas.id"), index=True)
+    mp_payment_id: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
+    mp_suscripcion_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    plan: Mapped[str] = mapped_column(String(20))
+    monto: Mapped[int] = mapped_column(Integer, default=0)
+    tipo: Mapped[str] = mapped_column(String(20), default="unico")        # unico | suscripcion
+    estado: Mapped[str] = mapped_column(String(20), default="pendiente")  # pendiente | aprobado | rechazado
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+    empresa: Mapped["Empresa"] = relationship("Empresa", back_populates="pagos")
