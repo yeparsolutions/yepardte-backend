@@ -115,7 +115,7 @@ async def crear_suscripcion(
             "transaction_amount": plan_info["precio"],
             "currency_id": "CLP",
         },
-        "back_url": f"{settings.FRONTEND_URL}/config",
+        "back_url": "https://yepardte.yeparsolutions.com/config",
         "notification_url": f"{settings.BACKEND_URL}/api/pagos/webhook",
         "status": "pending",
         "metadata": {
