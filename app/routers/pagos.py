@@ -132,6 +132,8 @@ async def crear_suscripcion(
             headers=mp_headers(),
         )
         if not resp.is_success:
+            import logging
+            logging.error(f"MP suscripcion error {resp.status_code}: {resp.text}")
             raise HTTPException(502, f"Error MP: {resp.text}")
         data = resp.json()
 
