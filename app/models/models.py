@@ -116,9 +116,10 @@ class Pago(Base):
 
     empresa: Mapped["Empresa"] = relationship("Empresa", back_populates="pagos")
 
+
 class Cliente(Base):
     __tablename__ = "clientes"
- 
+
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     empresa_id: Mapped[str] = mapped_column(ForeignKey("empresas.id"), index=True)
     rut: Mapped[str] = mapped_column(String(12), index=True)
@@ -127,4 +128,3 @@ class Cliente(Base):
     giro: Mapped[str | None] = mapped_column(String(300), nullable=True)
     direccion: Mapped[str | None] = mapped_column(String(300), nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
-    actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
