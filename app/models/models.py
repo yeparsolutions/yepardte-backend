@@ -128,3 +128,4 @@ class Cliente(Base):
     giro: Mapped[str | None] = mapped_column(String(300), nullable=True)
     direccion: Mapped[str | None] = mapped_column(String(300), nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=True)
