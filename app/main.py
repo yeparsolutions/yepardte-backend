@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.core.database import engine, Base
-from app.routers import auth, empresa, usuarios, dte, config, pagos
+from app.routers import auth, empresa, usuarios, dte, config, pagos, clientes
 
 settings = get_settings()
 
@@ -29,6 +29,7 @@ app.include_router(usuarios.router)
 app.include_router(dte.router)
 app.include_router(config.router)
 app.include_router(pagos.router)
+app.include_router(clientes.router)
 
 # ── Health ────────────────────────────────────────────────────
 @app.get("/api/health")
