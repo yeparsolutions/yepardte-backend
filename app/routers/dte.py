@@ -14,6 +14,12 @@ import uuid
 
 router = APIRouter(prefix="/api/dte", tags=["dte"])
 
+# ── Diagnóstico — confirma que esta versión está activa ───────────────────────
+# TEMPORAL: borrar este endpoint una vez confirmado que funciona
+@router.get("/test-rutas")
+async def test_rutas():
+    return {"version": "v2", "rutas": ["emitir", "historial", "test-rutas", "{doc_id}/enviar-email", "{doc_id}"]}
+
 
 @router.post("/emitir")
 async def emitir(
@@ -119,8 +125,8 @@ async def historial(
 
 
 # ── IMPORTANTE: rutas específicas ANTES de /{doc_id} ─────────────────────────
-# Analogía: en un menú de restaurante, los platos especiales van antes
-# que "el plato del día" genérico — FastAPI los evalúa en orden.
+# Analogía: en una fila de atención, los casos especiales van a ventanilla
+# preferencial — si no, el portero genérico los ataja primero.
 
 @router.post("/{doc_id}/enviar-email")
 async def enviar_documento_email(
@@ -131,7 +137,7 @@ async def enviar_documento_email(
 ):
     """
     Envía el documento por email al receptor.
-    Debe ir ANTES de GET /{doc_id} para que FastAPI no confunda la ruta.
+    Ruta específica — va ANTES de GET /{doc_id}.
     """
     result = await db.execute(
         select(Documento).where(Documento.id == doc_id, Documento.empresa_id == empresa.id)
@@ -182,9 +188,8 @@ async def obtener_documento(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Retorna todos los datos del documento para que el frontend
-    genere el PDF con generarPDFDocumento().
-    Va AL FINAL para no capturar rutas como /enviar-email.
+    Retorna todos los datos del documento para el frontend.
+    Va AL FINAL para no capturar otras rutas como /enviar-email.
     """
     result = await db.execute(
         select(Documento).where(Documento.id == doc_id, Documento.empresa_id == empresa.id)
