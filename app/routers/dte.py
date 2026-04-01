@@ -1,6 +1,7 @@
 # app/routers/dte.py
 import json
 import io
+import traceback
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -143,15 +144,11 @@ async def pdf_documento(
     empresa: Empresa = Depends(get_empresa),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Genera y retorna el PDF del documento DTE.
-    El token se valida via Depends(get_current_user) — igual que todos los endpoints.
-    """
     # ── 1. Buscar el documento en BD ──────────────────────────────────────────
     result = await db.execute(
         select(Documento).where(
             Documento.id == doc_id,
-            Documento.empresa_id == empresa.id,   # solo documentos de la empresa del usuario
+            Documento.empresa_id == empresa.id,
         )
     )
     doc = result.scalar_one_or_none()
@@ -164,7 +161,6 @@ async def pdf_documento(
         raise HTTPException(status_code=403, detail="Sin permiso para ver este documento")
 
     # ── 2. Generar PDF con reportlab ──────────────────────────────────────────
-    # Analogía: reportlab es como una impresora — le das los datos y devuelve bytes de PDF
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.lib import colors
@@ -180,29 +176,27 @@ async def pdf_documento(
         styles = getSampleStyleSheet()
         elementos = []
 
-        # ── Encabezado empresa ────────────────────────────────────────────────
+        # Estilos
         estilo_titulo = ParagraphStyle('titulo', parent=styles['Heading1'], fontSize=16, spaceAfter=4)
         estilo_sub    = ParagraphStyle('sub',    parent=styles['Normal'],   fontSize=10, textColor=colors.grey)
         estilo_bold   = ParagraphStyle('bold',   parent=styles['Normal'],   fontSize=11, fontName='Helvetica-Bold')
         estilo_normal = ParagraphStyle('normal', parent=styles['Normal'],   fontSize=10)
 
+        # Encabezado empresa
         elementos.append(Paragraph(empresa.nombre or "Empresa", estilo_titulo))
         elementos.append(Paragraph(f"RUT: {empresa.rut or '—'}", estilo_sub))
         elementos.append(Paragraph(f"Giro: {empresa.giro or '—'}", estilo_sub))
         elementos.append(Paragraph(f"Dirección: {empresa.direccion or '—'}, {empresa.comuna or ''}", estilo_sub))
         elementos.append(Spacer(1, 0.5*cm))
 
-        # ── Tipo y número de documento ────────────────────────────────────────
+        # Tipo y número
         elementos.append(Paragraph(f"{doc.tipo} Electrónica N° {doc.numero}", estilo_bold))
         if doc.folio:
             elementos.append(Paragraph(f"Folio: {doc.folio}", estilo_sub))
-        elementos.append(Paragraph(
-            f"Fecha: {doc.fecha.strftime('%d/%m/%Y %H:%M')}",
-            estilo_sub
-        ))
+        elementos.append(Paragraph(f"Fecha: {doc.fecha.strftime('%d/%m/%Y %H:%M')}", estilo_sub))
         elementos.append(Spacer(1, 0.5*cm))
 
-        # ── Datos del receptor ────────────────────────────────────────────────
+        # Datos del receptor
         elementos.append(Paragraph("Receptor", estilo_bold))
         elementos.append(Paragraph(f"Nombre: {doc.receptor_nombre or '—'}", estilo_normal))
         if doc.receptor_rut:
@@ -215,13 +209,25 @@ async def pdf_documento(
             elementos.append(Paragraph(f"Dirección: {doc.receptor_direccion}", estilo_normal))
         elementos.append(Spacer(1, 0.5*cm))
 
-        # ── Tabla de ítems ────────────────────────────────────────────────────
+        # Tabla de ítems
         items_data = [["Descripción", "Qty", "Precio unit.", "Subtotal"]]
-        items_list = json.loads(doc.items or "[]")
+
+        # ── Parsear items de forma segura ─────────────────────────────────────
+        # Analogía: los items pueden venir como string JSON o ya como lista —
+        # nos preparamos para ambos casos como un chef que acepta ingredientes
+        # frescos o congelados
+        items_raw = doc.items
+        if isinstance(items_raw, str):
+            items_list = json.loads(items_raw or "[]")
+        elif isinstance(items_raw, list):
+            items_list = items_raw
+        else:
+            items_list = []
+
         for item in items_list:
             subtotal = item.get("precio", 0) * item.get("qty", 1)
             items_data.append([
-                item.get("nombre", ""),
+                item.get("nombre", item.get("desc", "")),   # soporta ambas keys
                 str(item.get("qty", 1)),
                 f"${item.get('precio', 0):,.0f}".replace(",", "."),
                 f"${subtotal:,.0f}".replace(",", "."),
@@ -229,21 +235,20 @@ async def pdf_documento(
 
         tabla = Table(items_data, colWidths=[9*cm, 2*cm, 4*cm, 4*cm])
         tabla.setStyle(TableStyle([
-            ("BACKGROUND",  (0, 0), (-1, 0),  colors.HexColor("#1a1a2e")),
-            ("TEXTCOLOR",   (0, 0), (-1, 0),  colors.white),
-            ("FONTNAME",    (0, 0), (-1, 0),  "Helvetica-Bold"),
-            ("FONTSIZE",    (0, 0), (-1, -1), 9),
+            ("BACKGROUND",     (0, 0), (-1, 0),  colors.HexColor("#1a1a2e")),
+            ("TEXTCOLOR",      (0, 0), (-1, 0),  colors.white),
+            ("FONTNAME",       (0, 0), (-1, 0),  "Helvetica-Bold"),
+            ("FONTSIZE",       (0, 0), (-1, -1), 9),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5f5")]),
-            ("GRID",        (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
-            ("ALIGN",       (1, 0), (-1, -1), "RIGHT"),
-            ("PADDING",     (0, 0), (-1, -1), 6),
+            ("GRID",           (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
+            ("ALIGN",          (1, 0), (-1, -1), "RIGHT"),
+            ("PADDING",        (0, 0), (-1, -1), 6),
         ]))
         elementos.append(tabla)
         elementos.append(Spacer(1, 0.5*cm))
 
-        # ── Totales ───────────────────────────────────────────────────────────
-        totales_data = []
-        totales_data.append(["Neto", f"${doc.monto_neto:,.0f}".replace(",", ".")])
+        # Totales
+        totales_data = [["Neto", f"${doc.monto_neto:,.0f}".replace(",", ".")]]
         if doc.monto_iva:
             totales_data.append(["IVA (19%)", f"${doc.monto_iva:,.0f}".replace(",", ".")])
         totales_data.append(["TOTAL", f"${doc.monto_total:,.0f}".replace(",", ".")])
@@ -258,13 +263,13 @@ async def pdf_documento(
         ]))
         elementos.append(tabla_totales)
 
-        # ── Estado / Track ID ─────────────────────────────────────────────────
+        # Estado / Track ID
         elementos.append(Spacer(1, 1*cm))
         elementos.append(Paragraph(f"Estado SII: {doc.estado or '—'}", estilo_sub))
         if doc.track_id:
             elementos.append(Paragraph(f"Track ID: {doc.track_id}", estilo_sub))
 
-        # ── Construir PDF ─────────────────────────────────────────────────────
+        # Construir PDF
         doc_pdf.build(elementos)
         pdf_bytes = buffer.getvalue()
 
@@ -273,8 +278,10 @@ async def pdf_documento(
             status_code=500,
             detail="Librería reportlab no instalada. Agrega 'reportlab' a requirements.txt"
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generando PDF: {str(e)}")
+    except Exception:
+        # ── Traceback completo en el detalle para diagnosticar ────────────────
+        # TEMPORAL: remover este bloque una vez resuelto el error
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
 
     # ── 3. Retornar el PDF como respuesta binaria ─────────────────────────────
     nombre_archivo = f"{doc.tipo}-{doc.numero}.pdf".replace(" ", "_")
