@@ -1,16 +1,16 @@
 # app/routers/dte.py
 import json
 import io
-import traceback
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
 from app.core.deps import get_current_user, get_empresa
 from app.models.models import Documento, Empresa, Usuario
-from app.schemas.schemas import EmitirDocumento, DocumentoOut
+from app.schemas.schemas import EmitirDocumento
 from app.services.dtecore import dtecore
 from app.services.planes import PLANES
+from app.services.email_service import enviar_email, template_documento_email
 import uuid
 
 router = APIRouter(prefix="/api/dte", tags=["dte"])
@@ -71,21 +71,15 @@ async def emitir(
         track_id=resultado.get("track_id"),
     )
     db.add(doc)
-
     empresa.docs_usados = (empresa.docs_usados or 0) + 1
     await db.commit()
     await db.refresh(doc)
 
     return {"ok": True, "documento": {
-        "id": doc.id,
-        "tipo": doc.tipo,
-        "tipoCode": doc.tipo_code,
-        "numero": doc.numero,
-        "folio": doc.folio,
-        "receptor": doc.receptor_nombre,
-        "rut": doc.receptor_rut,
-        "monto": doc.monto_total,
-        "estado": doc.estado,
+        "id": doc.id, "tipo": doc.tipo, "tipoCode": doc.tipo_code,
+        "numero": doc.numero, "folio": doc.folio,
+        "receptor": doc.receptor_nombre, "rut": doc.receptor_rut,
+        "monto": doc.monto_total, "estado": doc.estado,
         "fecha": doc.fecha.isoformat(),
         "vendedor": body.vendedorNombre or user.nombre,
     }}
@@ -102,11 +96,8 @@ async def historial(
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Documento).where(Documento.empresa_id == empresa.id)
-
-    # Vendedor solo ve sus propios documentos
     if user.rol == "vendedor":
         query = query.where(Documento.vendedor_id == user.id)
-
     if tipo:
         query = query.where(Documento.tipo_code == tipo)
     if estado:
@@ -121,15 +112,10 @@ async def historial(
 
     return {
         "documentos": [{
-            "id": d.id,
-            "tipo": d.tipo,
-            "tipoCode": d.tipo_code,
-            "numero": d.numero,
-            "receptor": d.receptor_nombre,
-            "rut": d.receptor_rut,
-            "monto": d.monto_total,
-            "estado": d.estado,
-            "fecha": d.fecha.isoformat(),
+            "id": d.id, "tipo": d.tipo, "tipoCode": d.tipo_code,
+            "numero": d.numero, "receptor": d.receptor_nombre,
+            "rut": d.receptor_rut, "monto": d.monto_total,
+            "estado": d.estado, "fecha": d.fecha.isoformat(),
             "track_id": d.track_id,
         } for d in docs],
         "total": total,
@@ -145,26 +131,18 @@ async def obtener_documento(
 ):
     """
     Retorna todos los datos del documento para que el frontend
-    genere el PDF con su propio generarPDFDocumento() — idéntico
-    al que se genera al emitir.
-    Analogía: el backend es la bodega, el frontend es el impresor.
+    genere el PDF con generarPDFDocumento() — idéntico al emitir.
     """
     result = await db.execute(
-        select(Documento).where(
-            Documento.id == doc_id,
-            Documento.empresa_id == empresa.id,
-        )
+        select(Documento).where(Documento.id == doc_id, Documento.empresa_id == empresa.id)
     )
     doc = result.scalar_one_or_none()
-
     if not doc:
         raise HTTPException(status_code=404, detail="Documento no encontrado")
-
-    # Vendedor solo puede ver sus propios documentos
     if user.rol == "vendedor" and doc.vendedor_id != user.id:
-        raise HTTPException(status_code=403, detail="Sin permiso para ver este documento")
+        raise HTTPException(status_code=403, detail="Sin permiso")
 
-    # Parsear items guardados como JSON string
+    # Parsear items guardados como JSON string o lista
     items_raw = doc.items
     if isinstance(items_raw, str):
         items_list = json.loads(items_raw or "[]")
@@ -173,27 +151,81 @@ async def obtener_documento(
     else:
         items_list = []
 
-    # Calcular neto e iva desde los montos guardados
     return {
         "documento": {
-            "id":               doc.id,
-            "tipo":             doc.tipo,
-            "tipoCode":         doc.tipo_code,
-            "numero":           doc.numero,
-            "folio":            doc.folio,
-            "receptor":         doc.receptor_nombre,
-            "rut":              doc.receptor_rut,
-            "receptorNombre":   doc.receptor_nombre,
-            "receptorRut":      doc.receptor_rut,
-            "receptorEmail":    doc.receptor_email,
-            "receptorGiro":     doc.receptor_giro,
-            "receptorDireccion":doc.receptor_direccion,
-            "monto":            doc.monto_total,
-            "neto":             doc.monto_neto,
-            "iva":              doc.monto_iva,
-            "estado":           doc.estado,
-            "fecha":            doc.fecha.isoformat(),
-            "track_id":         doc.track_id,
-            "items":            items_list,
+            "id":                doc.id,
+            "tipo":              doc.tipo,
+            "tipoCode":          doc.tipo_code,
+            "numero":            doc.numero,
+            "folio":             doc.folio,
+            "receptor":          doc.receptor_nombre,
+            "rut":               doc.receptor_rut,
+            "receptorNombre":    doc.receptor_nombre,
+            "receptorRut":       doc.receptor_rut,
+            "receptorEmail":     doc.receptor_email,
+            "receptorGiro":      doc.receptor_giro,
+            "receptorDireccion": doc.receptor_direccion,
+            "monto":             doc.monto_total,
+            "neto":              doc.monto_neto,
+            "iva":               doc.monto_iva,
+            "estado":            doc.estado,
+            "fecha":             doc.fecha.isoformat(),
+            "track_id":          doc.track_id,
+            "items":             items_list,
         }
     }
+
+
+@router.post("/{doc_id}/enviar-email")
+async def enviar_documento_email(
+    doc_id: str,
+    user: Usuario = Depends(get_current_user),
+    empresa: Empresa = Depends(get_empresa),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Envía el documento por email al receptor.
+    Analogía: el cartero oficial de la empresa — lleva el sobre
+    al destinatario con el sello y membrete de la empresa emisora.
+    """
+    result = await db.execute(
+        select(Documento).where(Documento.id == doc_id, Documento.empresa_id == empresa.id)
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    if user.rol == "vendedor" and doc.vendedor_id != user.id:
+        raise HTTPException(status_code=403, detail="Sin permiso")
+
+    # Verificar que el receptor tiene email registrado
+    if not doc.receptor_email:
+        raise HTTPException(
+            status_code=400,
+            detail="Este documento no tiene email del receptor. Edita el documento para agregarlo."
+        )
+
+    # Formatear fecha
+    fecha_fmt = doc.fecha.strftime("%d/%m/%Y")
+
+    # Generar y enviar el email con el template de YeparDTE
+    ok = enviar_email(
+        destinatario=doc.receptor_email,
+        asunto=f"{doc.tipo} {doc.numero} — {empresa.nombre}",
+        html=template_documento_email(
+            empresa_nombre=empresa.nombre,
+            empresa_rut=empresa.rut,
+            tipo_doc=doc.tipo,
+            numero_doc=doc.numero,
+            receptor_nombre=doc.receptor_nombre,
+            monto_total=doc.monto_total,
+            fecha=fecha_fmt,
+        ),
+    )
+
+    if not ok:
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo enviar el email. Verifica la configuración de RESEND_API_KEY."
+        )
+
+    return {"ok": True, "mensaje": f"Documento enviado a {doc.receptor_email}"}
