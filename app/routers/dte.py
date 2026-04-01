@@ -1,7 +1,6 @@
 # app/routers/dte.py
 import json
-import io
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
@@ -30,13 +29,11 @@ async def emitir(
             detail=f"Límite de {plan_info['docsLimit']} documentos alcanzado. Actualiza tu plan."
         )
 
-    # Calcular montos
     es_boleta = body.tipoCode == "39"
     neto  = sum(item.precio * item.qty for item in body.items)
     iva   = 0 if es_boleta else round(neto * 0.19)
     total = neto + iva
 
-    # Llamar a DTECore
     try:
         resultado = await dtecore.emitir_dte(
             tipo_code=body.tipoCode,
@@ -49,7 +46,6 @@ async def emitir(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Error en DTECore: {str(e)}")
 
-    # Guardar en BD
     doc = Documento(
         id=str(uuid.uuid4()),
         empresa_id=empresa.id,
@@ -122,16 +118,20 @@ async def historial(
     }
 
 
-@router.get("/{doc_id}")
-async def obtener_documento(
+# ── IMPORTANTE: rutas específicas ANTES de /{doc_id} ─────────────────────────
+# Analogía: en un menú de restaurante, los platos especiales van antes
+# que "el plato del día" genérico — FastAPI los evalúa en orden.
+
+@router.post("/{doc_id}/enviar-email")
+async def enviar_documento_email(
     doc_id: str,
     user: Usuario = Depends(get_current_user),
     empresa: Empresa = Depends(get_empresa),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Retorna todos los datos del documento para que el frontend
-    genere el PDF con generarPDFDocumento() — idéntico al emitir.
+    Envía el documento por email al receptor.
+    Debe ir ANTES de GET /{doc_id} para que FastAPI no confunda la ruta.
     """
     result = await db.execute(
         select(Documento).where(Documento.id == doc_id, Documento.empresa_id == empresa.id)
@@ -142,7 +142,59 @@ async def obtener_documento(
     if user.rol == "vendedor" and doc.vendedor_id != user.id:
         raise HTTPException(status_code=403, detail="Sin permiso")
 
-    # Parsear items guardados como JSON string o lista
+    if not doc.receptor_email:
+        raise HTTPException(
+            status_code=400,
+            detail="Este documento no tiene email del receptor."
+        )
+
+    fecha_fmt = doc.fecha.strftime("%d/%m/%Y")
+
+    ok = enviar_email(
+        destinatario=doc.receptor_email,
+        asunto=f"{doc.tipo} {doc.numero} — {empresa.nombre}",
+        html=template_documento_email(
+            empresa_nombre=empresa.nombre,
+            empresa_rut=empresa.rut,
+            tipo_doc=doc.tipo,
+            numero_doc=doc.numero,
+            receptor_nombre=doc.receptor_nombre,
+            monto_total=doc.monto_total,
+            fecha=fecha_fmt,
+        ),
+    )
+
+    if not ok:
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo enviar el email. Verifica RESEND_API_KEY en las variables de entorno."
+        )
+
+    return {"ok": True, "mensaje": f"Documento enviado a {doc.receptor_email}"}
+
+
+# ── Ruta genérica al final ────────────────────────────────────────────────────
+@router.get("/{doc_id}")
+async def obtener_documento(
+    doc_id: str,
+    user: Usuario = Depends(get_current_user),
+    empresa: Empresa = Depends(get_empresa),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Retorna todos los datos del documento para que el frontend
+    genere el PDF con generarPDFDocumento().
+    Va AL FINAL para no capturar rutas como /enviar-email.
+    """
+    result = await db.execute(
+        select(Documento).where(Documento.id == doc_id, Documento.empresa_id == empresa.id)
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    if user.rol == "vendedor" and doc.vendedor_id != user.id:
+        raise HTTPException(status_code=403, detail="Sin permiso")
+
     items_raw = doc.items
     if isinstance(items_raw, str):
         items_list = json.loads(items_raw or "[]")
@@ -174,58 +226,3 @@ async def obtener_documento(
             "items":             items_list,
         }
     }
-
-
-@router.post("/{doc_id}/enviar-email")
-async def enviar_documento_email(
-    doc_id: str,
-    user: Usuario = Depends(get_current_user),
-    empresa: Empresa = Depends(get_empresa),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Envía el documento por email al receptor.
-    Analogía: el cartero oficial de la empresa — lleva el sobre
-    al destinatario con el sello y membrete de la empresa emisora.
-    """
-    result = await db.execute(
-        select(Documento).where(Documento.id == doc_id, Documento.empresa_id == empresa.id)
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Documento no encontrado")
-    if user.rol == "vendedor" and doc.vendedor_id != user.id:
-        raise HTTPException(status_code=403, detail="Sin permiso")
-
-    # Verificar que el receptor tiene email registrado
-    if not doc.receptor_email:
-        raise HTTPException(
-            status_code=400,
-            detail="Este documento no tiene email del receptor. Edita el documento para agregarlo."
-        )
-
-    # Formatear fecha
-    fecha_fmt = doc.fecha.strftime("%d/%m/%Y")
-
-    # Generar y enviar el email con el template de YeparDTE
-    ok = enviar_email(
-        destinatario=doc.receptor_email,
-        asunto=f"{doc.tipo} {doc.numero} — {empresa.nombre}",
-        html=template_documento_email(
-            empresa_nombre=empresa.nombre,
-            empresa_rut=empresa.rut,
-            tipo_doc=doc.tipo,
-            numero_doc=doc.numero,
-            receptor_nombre=doc.receptor_nombre,
-            monto_total=doc.monto_total,
-            fecha=fecha_fmt,
-        ),
-    )
-
-    if not ok:
-        raise HTTPException(
-            status_code=500,
-            detail="No se pudo enviar el email. Verifica la configuración de RESEND_API_KEY."
-        )
-
-    return {"ok": True, "mensaje": f"Documento enviado a {doc.receptor_email}"}
