@@ -1,6 +1,10 @@
 # app/routers/dte.py v3
 import json
-from fastapi import APIRouter, Depends, HTTPException
+import secrets
+import hashlib
+import hmac
+from datetime import datetime, timezone, timedelta
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
@@ -10,9 +14,29 @@ from app.schemas.schemas import EmitirDocumento
 from app.services.dtecore import dtecore
 from app.services.planes import PLANES
 from app.services.email_service import enviar_email, template_documento_email, generar_pdf_documento
+import os
 import uuid
 
 router = APIRouter(prefix="/api/dte", tags=["dte"])
+
+# Clave para firmar tokens de descarga pública
+SECRET_KEY = os.getenv("SECRET_KEY", "changeme")
+
+
+def _generar_token_pdf(doc_id: str) -> str:
+    """
+    Genera un token HMAC para descarga pública del PDF.
+    Analogía: el número de seguimiento de un paquete —
+    cualquiera con ese número puede rastrear su paquete,
+    pero no puede ver el de otra persona.
+    """
+    msg = f"{doc_id}:{SECRET_KEY}".encode()
+    return hmac.new(SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()[:32]
+
+
+def _verificar_token_pdf(doc_id: str, token: str) -> bool:
+    esperado = _generar_token_pdf(doc_id)
+    return hmac.compare_digest(esperado, token)
 
 
 @router.post("/emitir")
@@ -128,9 +152,7 @@ async def enviar_documento_email(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Genera el PDF del documento y lo envía por email al receptor.
-    Analogía: la secretaria imprime el documento, lo mete en el sobre
-    y lo despacha al destinatario — todo en un solo paso.
+    Envía email al receptor con botón de descarga del PDF.
     """
     result = await db.execute(
         select(Documento).where(Documento.id == doc_id, Documento.empresa_id == empresa.id)
@@ -141,19 +163,11 @@ async def enviar_documento_email(
     if user.rol == "vendedor" and doc.vendedor_id != user.id:
         raise HTTPException(status_code=403, detail="Sin permiso")
     if not doc.receptor_email:
-        raise HTTPException(
-            status_code=400,
-            detail="Este documento no tiene email del receptor."
-        )
+        raise HTTPException(status_code=400, detail="Este documento no tiene email del receptor.")
 
-    # Generar PDF para adjuntar
-    try:
-        pdf_bytes = generar_pdf_documento(doc, empresa)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generando PDF: {str(e)}")
-
-    nombre_archivo = f"{doc.tipo}-{doc.numero}.pdf".replace(" ", "_")
-    fecha_fmt      = doc.fecha.strftime("%d/%m/%Y")
+    # Generar token de descarga pública para el botón del email
+    token     = _generar_token_pdf(doc_id)
+    fecha_fmt = doc.fecha.strftime("%d/%m/%Y")
 
     ok = enviar_email(
         destinatario=doc.receptor_email,
@@ -166,18 +180,56 @@ async def enviar_documento_email(
             receptor_nombre=doc.receptor_nombre,
             monto_total=doc.monto_total,
             fecha=fecha_fmt,
+            doc_id=doc_id,
+            token=token,
         ),
-        # PDF adjunto al email
-        adjuntos=[{"filename": nombre_archivo, "content": pdf_bytes}],
     )
 
     if not ok:
-        raise HTTPException(
-            status_code=500,
-            detail="No se pudo enviar el email. Verifica RESEND_API_KEY."
-        )
+        raise HTTPException(status_code=500, detail="No se pudo enviar el email. Verifica RESEND_API_KEY.")
 
     return {"ok": True, "mensaje": f"Documento enviado a {doc.receptor_email}"}
+
+
+@router.get("/{doc_id}/pdf-publico")
+async def pdf_publico(
+    doc_id: str,
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Descarga pública del PDF via token HMAC — sin autenticación JWT.
+    El receptor del email puede descargar el PDF con el link del botón.
+    Analogía: el link de seguimiento del paquete — público pero seguro.
+    """
+    # Verificar token
+    if not _verificar_token_pdf(doc_id, token):
+        raise HTTPException(status_code=403, detail="Token inválido")
+
+    # Buscar documento
+    result = await db.execute(select(Documento).where(Documento.id == doc_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+
+    # Buscar empresa
+    empresa_result = await db.execute(select(Empresa).where(Empresa.id == doc.empresa_id))
+    empresa = empresa_result.scalar_one_or_none()
+    if not empresa:
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+
+    # Generar PDF
+    try:
+        pdf_bytes = generar_pdf_documento(doc, empresa)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generando PDF: {str(e)}")
+
+    nombre_archivo = f"{doc.tipo}-{doc.numero}.pdf".replace(" ", "_")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{nombre_archivo}"'},
+    )
 
 
 # ── Ruta genérica al final ────────────────────────────────────────────────────
@@ -189,10 +241,6 @@ async def obtener_documento(
     empresa: Empresa = Depends(get_empresa),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Retorna todos los datos del documento para que el frontend
-    genere el PDF con generarPDFDocumento().
-    """
     result = await db.execute(
         select(Documento).where(Documento.id == doc_id, Documento.empresa_id == empresa.id)
     )
