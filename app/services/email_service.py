@@ -2,9 +2,6 @@
 # ============================================================
 # YeparDTE — Servicio de Email
 # Envío de correos transaccionales via Resend API
-# Analogía: el mensajero del negocio — recibe el sobre (datos),
-# lo lleva por la ruta correcta (Resend API) y confirma
-# que fue entregado o reporta si falló.
 # ============================================================
 
 import os
@@ -18,13 +15,13 @@ RESEND_API_KEY  = os.getenv("RESEND_API_KEY", "")
 EMAIL_FROM      = os.getenv("EMAIL_FROM",      "soporte@yeparsolutions.com")
 EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "YeparDTE")
 FRONTEND_URL    = os.getenv("VITE_FRONTEND_URL", "https://yepardte.yeparsolutions.com")
+BACKEND_URL     = os.getenv("BACKEND_URL", "https://yepardte-backend-production.up.railway.app")
 
 
 def enviar_email(destinatario: str, asunto: str, html: str, adjuntos: list = None) -> bool:
     """
-    Envía un email HTML via Resend, con adjuntos opcionales.
-    adjuntos: lista de dicts con {"filename": "doc.pdf", "content": bytes}
-    Analogía: el mensajero — lleva el sobre y puede llevar documentos adjuntos.
+    Envía un email HTML via Resend.
+    adjuntos: ignorado en plan gratuito — el PDF va como link en el HTML.
     """
     if not RESEND_API_KEY:
         print("[EMAIL ERROR] RESEND_API_KEY no configurado")
@@ -44,17 +41,6 @@ def enviar_email(destinatario: str, asunto: str, html: str, adjuntos: list = Non
             "html":    html,
         }
 
-        # Adjuntar archivos si se proporcionan
-        # Resend espera el contenido en base64 como string
-        if adjuntos:
-            params["attachments"] = [
-                {
-                    "filename": adj["filename"],
-                    "content":  base64.b64encode(adj["content"]).decode("utf-8"),
-                }
-                for adj in adjuntos
-            ]
-
         response = resend.Emails.send(params)
 
         if response and response.get("id"):
@@ -69,13 +55,12 @@ def enviar_email(destinatario: str, asunto: str, html: str, adjuntos: list = Non
         return False
 
 
-# ── Generador de PDF para adjuntar ────────────────────────────────────────────
+# ── Generador de PDF (usado internamente si se necesita) ──────────────────────
 
 def generar_pdf_documento(doc, empresa) -> bytes:
     """
     Genera el PDF del documento DTE usando reportlab.
-    Retorna los bytes del PDF para adjuntar al email.
-    Analogía: la impresora del negocio — toma los datos y produce el papel.
+    Retorna los bytes del PDF.
     """
     import io
     import json
@@ -85,7 +70,7 @@ def generar_pdf_documento(doc, empresa) -> bytes:
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm
 
-    buffer = io.BytesIO()
+    buffer  = io.BytesIO()
     doc_pdf = SimpleDocTemplate(buffer, pagesize=letter,
                                 topMargin=2*cm, bottomMargin=2*cm,
                                 leftMargin=2*cm, rightMargin=2*cm)
@@ -98,21 +83,18 @@ def generar_pdf_documento(doc, empresa) -> bytes:
     estilo_bold   = ParagraphStyle('bold',   parent=styles['Normal'],   fontSize=11, fontName='Helvetica-Bold')
     estilo_normal = ParagraphStyle('normal', parent=styles['Normal'],   fontSize=10)
 
-    # Encabezado empresa
     elementos.append(Paragraph(empresa.nombre or "Empresa", estilo_titulo))
     elementos.append(Paragraph(f"RUT: {empresa.rut or '—'}", estilo_sub))
     elementos.append(Paragraph(f"Giro: {empresa.giro or '—'}", estilo_sub))
     elementos.append(Paragraph(f"Dirección: {empresa.direccion or '—'}, {empresa.comuna or ''}", estilo_sub))
     elementos.append(Spacer(1, 0.5*cm))
 
-    # Tipo y número
     elementos.append(Paragraph(f"{doc.tipo} Electrónica N° {doc.numero}", estilo_bold))
     if doc.folio:
         elementos.append(Paragraph(f"Folio: {doc.folio}", estilo_sub))
     elementos.append(Paragraph(f"Fecha: {doc.fecha.strftime('%d/%m/%Y %H:%M')}", estilo_sub))
     elementos.append(Spacer(1, 0.5*cm))
 
-    # Receptor
     elementos.append(Paragraph("Receptor", estilo_bold))
     elementos.append(Paragraph(f"Nombre: {doc.receptor_nombre or '—'}", estilo_normal))
     if doc.receptor_rut:
@@ -125,7 +107,6 @@ def generar_pdf_documento(doc, empresa) -> bytes:
         elementos.append(Paragraph(f"Dirección: {doc.receptor_direccion}", estilo_normal))
     elementos.append(Spacer(1, 0.5*cm))
 
-    # Tabla de ítems
     items_raw = doc.items
     if isinstance(items_raw, str):
         items_list = json.loads(items_raw or "[]")
@@ -158,7 +139,6 @@ def generar_pdf_documento(doc, empresa) -> bytes:
     elementos.append(tabla)
     elementos.append(Spacer(1, 0.5*cm))
 
-    # Totales
     totales_data = [["Neto", f"${doc.monto_neto:,.0f}".replace(",", ".")]]
     if doc.monto_iva:
         totales_data.append(["IVA (19%)", f"${doc.monto_iva:,.0f}".replace(",", ".")])
@@ -213,7 +193,7 @@ def template_codigo_verificacion(nombre: str, codigo: str) -> str:
                  style="display:block;margin:0 auto 24px;" onerror="this.style.display='none'">
             <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#0f172a;">HOLA {nombre.upper()}</h1>
             <p style="margin:0 0 8px;font-size:16px;color:#475569;font-weight:600;">AQUÍ ESTÁ TU CÓDIGO</p>
-            <p style="margin:0 0 28px;font-size:15px;color:#64748b;line-height:1.6;">Tu código de verificación es</p>
+            <p style="margin:0 0 28px;font-size:15px;color:#64748b;">Tu código de verificación es</p>
             <div style="display:inline-block;background:#f0fdf4;border:2px solid #00C77B;
                         border-radius:14px;padding:18px 40px;margin-bottom:28px;">
               <span style="font-family:monospace;font-size:42px;font-weight:900;
@@ -228,14 +208,12 @@ def template_codigo_verificacion(nombre: str, codigo: str) -> str:
         </tr>
         <tr>
           <td style="background:#f8fafc;padding:20px 40px;border-top:1px solid #e2e8f0;">
-            <table width="100%" cellpadding="0" cellspacing="0">
-              <tr>
-                <td style="font-size:12px;color:#94a3b8;">
-                  <a href="https://yeparsolutions.com" style="color:#94a3b8;text-decoration:none;">https://yeparsolutions.com</a>
-                </td>
-                <td style="font-size:12px;color:#94a3b8;text-align:right;">© 2026 Yepar Solutions SpA.</td>
-              </tr>
-            </table>
+            <table width="100%" cellpadding="0" cellspacing="0"><tr>
+              <td style="font-size:12px;color:#94a3b8;">
+                <a href="https://yeparsolutions.com" style="color:#94a3b8;text-decoration:none;">https://yeparsolutions.com</a>
+              </td>
+              <td style="font-size:12px;color:#94a3b8;text-align:right;">© 2026 Yepar Solutions SpA.</td>
+            </tr></table>
           </td>
         </tr>
       </table>
@@ -253,9 +231,34 @@ def template_documento_email(
     receptor_nombre: str,
     monto_total: int,
     fecha: str,
+    doc_id: str = "",
+    token: str = "",
 ) -> str:
+    """
+    Email con botón de descarga PDF en vez de adjunto.
+    Analogía: en vez de meter el documento en el sobre,
+    le damos al receptor la dirección donde puede retirarlo.
+    """
     logo_url  = f"{FRONTEND_URL}/logo-1200x520.png"
     monto_fmt = f"${monto_total:,.0f}".replace(",", ".")
+
+    # Link de descarga del PDF con token temporal
+    pdf_url = f"{BACKEND_URL}/api/dte/{doc_id}/pdf-publico?token={token}" if doc_id and token else ""
+
+    boton_pdf = f"""
+    <div style="text-align:center;margin:28px 0;">
+      <a href="{pdf_url}"
+         style="display:inline-block;background:#00C77B;color:#ffffff;
+                font-size:15px;font-weight:700;text-decoration:none;
+                padding:14px 32px;border-radius:10px;letter-spacing:0.3px;">
+        ⬇ Descargar documento PDF
+      </a>
+    </div>
+    """ if pdf_url else """
+    <p style="margin:0 0 8px;font-size:14px;color:#475569;line-height:1.6;">
+      Puedes solicitar el PDF directamente al emisor.
+    </p>
+    """
 
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -317,9 +320,9 @@ def template_documento_email(
                 </tr>
               </table>
             </div>
-            <p style="margin:0 0 8px;font-size:14px;color:#475569;line-height:1.6;">
-              El documento en PDF está adjunto a este correo.
-            </p>
+
+            {boton_pdf}
+
             <p style="margin:0;font-size:13px;color:#94a3b8;">
               Puedes verificar la autenticidad en
               <a href="https://www.sii.cl" style="color:#00C77B;">www.sii.cl</a>
@@ -328,14 +331,12 @@ def template_documento_email(
         </tr>
         <tr>
           <td style="background:#f8fafc;padding:20px 40px;border-top:1px solid #e2e8f0;">
-            <table width="100%" cellpadding="0" cellspacing="0">
-              <tr>
-                <td style="font-size:12px;color:#94a3b8;">
-                  Enviado con <a href="https://yeparsolutions.com" style="color:#00C77B;text-decoration:none;">YeparDTE</a>
-                </td>
-                <td style="font-size:12px;color:#94a3b8;text-align:right;">© 2026 Yepar Solutions SpA.</td>
-              </tr>
-            </table>
+            <table width="100%" cellpadding="0" cellspacing="0"><tr>
+              <td style="font-size:12px;color:#94a3b8;">
+                Enviado con <a href="https://yeparsolutions.com" style="color:#00C77B;text-decoration:none;">YeparDTE</a>
+              </td>
+              <td style="font-size:12px;color:#94a3b8;text-align:right;">© 2026 Yepar Solutions SpA.</td>
+            </tr></table>
           </td>
         </tr>
       </table>
