@@ -39,6 +39,6 @@ async def health():
 # ── Crear tablas al iniciar ───────────────────────────────────
 @app.on_event("startup")
 async def startup():
-    print("=== STARTUP v3 - dte router cargado ===")
+    print("=== STARTUP v4 - forzar redeploy ===")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
