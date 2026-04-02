@@ -1,4 +1,4 @@
-# app/routers/dte.py
+# app/routers/dte.py v3
 import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,16 +9,10 @@ from app.models.models import Documento, Empresa, Usuario
 from app.schemas.schemas import EmitirDocumento
 from app.services.dtecore import dtecore
 from app.services.planes import PLANES
-from app.services.email_service import enviar_email, template_documento_email
+from app.services.email_service import enviar_email, template_documento_email, generar_pdf_documento
 import uuid
 
 router = APIRouter(prefix="/api/dte", tags=["dte"])
-
-# ── Diagnóstico — confirma que esta versión está activa ───────────────────────
-# TEMPORAL: borrar este endpoint una vez confirmado que funciona
-@router.get("/test-rutas")
-async def test_rutas():
-    return {"version": "v2", "rutas": ["emitir", "historial", "test-rutas", "{doc_id}/enviar-email", "{doc_id}"]}
 
 
 @router.post("/emitir")
@@ -124,9 +118,7 @@ async def historial(
     }
 
 
-# ── IMPORTANTE: rutas específicas ANTES de /{doc_id} ─────────────────────────
-# Analogía: en una fila de atención, los casos especiales van a ventanilla
-# preferencial — si no, el portero genérico los ataja primero.
+# ── Rutas específicas ANTES de /{doc_id} ──────────────────────────────────────
 
 @router.post("/{doc_id}/enviar-email")
 async def enviar_documento_email(
@@ -136,8 +128,9 @@ async def enviar_documento_email(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Envía el documento por email al receptor.
-    Ruta específica — va ANTES de GET /{doc_id}.
+    Genera el PDF del documento y lo envía por email al receptor.
+    Analogía: la secretaria imprime el documento, lo mete en el sobre
+    y lo despacha al destinatario — todo en un solo paso.
     """
     result = await db.execute(
         select(Documento).where(Documento.id == doc_id, Documento.empresa_id == empresa.id)
@@ -147,14 +140,20 @@ async def enviar_documento_email(
         raise HTTPException(status_code=404, detail="Documento no encontrado")
     if user.rol == "vendedor" and doc.vendedor_id != user.id:
         raise HTTPException(status_code=403, detail="Sin permiso")
-
     if not doc.receptor_email:
         raise HTTPException(
             status_code=400,
             detail="Este documento no tiene email del receptor."
         )
 
-    fecha_fmt = doc.fecha.strftime("%d/%m/%Y")
+    # Generar PDF para adjuntar
+    try:
+        pdf_bytes = generar_pdf_documento(doc, empresa)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generando PDF: {str(e)}")
+
+    nombre_archivo = f"{doc.tipo}-{doc.numero}.pdf".replace(" ", "_")
+    fecha_fmt      = doc.fecha.strftime("%d/%m/%Y")
 
     ok = enviar_email(
         destinatario=doc.receptor_email,
@@ -168,18 +167,21 @@ async def enviar_documento_email(
             monto_total=doc.monto_total,
             fecha=fecha_fmt,
         ),
+        # PDF adjunto al email
+        adjuntos=[{"filename": nombre_archivo, "content": pdf_bytes}],
     )
 
     if not ok:
         raise HTTPException(
             status_code=500,
-            detail="No se pudo enviar el email. Verifica RESEND_API_KEY en las variables de entorno."
+            detail="No se pudo enviar el email. Verifica RESEND_API_KEY."
         )
 
     return {"ok": True, "mensaje": f"Documento enviado a {doc.receptor_email}"}
 
 
 # ── Ruta genérica al final ────────────────────────────────────────────────────
+
 @router.get("/{doc_id}")
 async def obtener_documento(
     doc_id: str,
@@ -188,8 +190,8 @@ async def obtener_documento(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Retorna todos los datos del documento para el frontend.
-    Va AL FINAL para no capturar otras rutas como /enviar-email.
+    Retorna todos los datos del documento para que el frontend
+    genere el PDF con generarPDFDocumento().
     """
     result = await db.execute(
         select(Documento).where(Documento.id == doc_id, Documento.empresa_id == empresa.id)
