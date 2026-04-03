@@ -36,13 +36,11 @@ async def subir_firma(
     admin: Usuario = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Sube y cifra la firma digital (.pfx/.p12) de la empresa."""
     if not archivo.filename.endswith((".pfx", ".p12")):
         raise HTTPException(status_code=400, detail="Solo se aceptan archivos .pfx o .p12")
-
     contenido = await archivo.read()
-    empresa.firma_digital = encrypt_firma(contenido)
-    empresa.firma_password = password   # TODO: cifrar también con Fernet
+    empresa.firma_digital  = encrypt_firma(contenido)
+    empresa.firma_password = password
     empresa.tributario_completo = True
     await db.commit()
     return {"ok": True, "mensaje": "Firma digital cargada correctamente"}
@@ -51,19 +49,22 @@ async def subir_firma(
 @router.post("/caf")
 async def subir_caf(
     archivo: UploadFile = File(...),
-    tipo: str = "39",  # 39=boleta 33=factura
+    tipo: str = "39",   # 39=boleta afecta | 41=boleta exenta | 33=factura
     empresa: Empresa = Depends(get_empresa),
     admin: Usuario = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Sube y cifra el CAF (XML de folios) de la empresa."""
     contenido = await archivo.read()
     cifrado = encrypt_firma(contenido)
+
     if tipo == "39":
         empresa.caf_boleta = cifrado
+    elif tipo == "41":
+        empresa.caf_boleta_exenta = cifrado
     elif tipo == "33":
         empresa.caf_factura = cifrado
     else:
-        raise HTTPException(status_code=400, detail="Tipo debe ser 39 o 33")
+        raise HTTPException(status_code=400, detail="Tipo debe ser 39, 41 o 33")
+
     await db.commit()
     return {"ok": True, "mensaje": f"CAF tipo {tipo} cargado correctamente"}
