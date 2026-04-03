@@ -29,6 +29,7 @@ class Empresa(Base):
     firma_vencimiento: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     caf_boleta: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    caf_boleta_exenta: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)   # CAF Tipo 41
     caf_factura: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
     plan: Mapped[str] = mapped_column(String(20), default="gratuito")
@@ -55,12 +56,7 @@ class Usuario(Base):
     pin_hash: Mapped[str | None] = mapped_column(String(500), nullable=True)
     rol: Mapped[str] = mapped_column(String(20), default="vendedor")
     activo: Mapped[bool] = mapped_column(Boolean, default=True)
-
-    # ── Verificación de email ─────────────────────────────────────────────────
-    # Analogía: el casillero del correo — el usuario no puede entrar hasta
-    # que demuestre que tiene la llave (código en su email)
     email_verificado: Mapped[bool] = mapped_column(Boolean, default=False)
-
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
     empresa: Mapped["Empresa"] = relationship("Empresa", back_populates="usuarios")
@@ -68,11 +64,6 @@ class Usuario(Base):
 
 
 class CodigoVerificacion(Base):
-    """
-    Almacena códigos OTP temporales para verificar emails al registrarse.
-    Analogía: el ticket numerado de la panadería — tiene un número,
-    pertenece a alguien, y expira después de un tiempo.
-    """
     __tablename__ = "codigos_verificacion"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -102,8 +93,11 @@ class Documento(Base):
     receptor_giro: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
     monto_neto: Mapped[int] = mapped_column(BigInteger, default=0)
+    monto_exento: Mapped[int] = mapped_column(BigInteger, default=0)   # Monto exento Tipo 41
     monto_iva: Mapped[int] = mapped_column(BigInteger, default=0)
     monto_total: Mapped[int] = mapped_column(BigInteger, default=0)
+
+    condicion_pago: Mapped[str | None] = mapped_column(String(50), nullable=True, default="Contado")
 
     items: Mapped[str] = mapped_column(Text, default="[]")
     estado: Mapped[str] = mapped_column(String(30), default="pendiente")
