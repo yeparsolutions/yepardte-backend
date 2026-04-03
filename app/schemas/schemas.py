@@ -1,19 +1,15 @@
-# app/schemas/schemas.py
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List
 from datetime import datetime
-
 
 # ── Auth ──────────────────────────────────────────────────────
 class LoginAdmin(BaseModel):
     email: EmailStr
     password: str
 
-
 class LoginVendedor(BaseModel):
     adminRut: str
     pin: str
-
 
 class RegistroEmpresa(BaseModel):
     nombre: str
@@ -25,11 +21,9 @@ class RegistroEmpresa(BaseModel):
     email: EmailStr
     password: str
 
-
 class TokenResponse(BaseModel):
     token: str
     usuario: dict
-
 
 # ── Empresa ───────────────────────────────────────────────────
 class EmpresaUpdate(BaseModel):
@@ -38,7 +32,6 @@ class EmpresaUpdate(BaseModel):
     direccion: Optional[str] = None
     comuna: Optional[str] = None
     ciudad: Optional[str] = None
-
 
 class EmpresaOut(BaseModel):
     id: str
@@ -56,7 +49,6 @@ class EmpresaOut(BaseModel):
     class Config:
         from_attributes = True
 
-
 # ── Vendedores ────────────────────────────────────────────────
 class VendedorCreate(BaseModel):
     nombre: str
@@ -69,7 +61,6 @@ class VendedorCreate(BaseModel):
             raise ValueError("El PIN debe tener al menos 4 dígitos")
         return v
 
-
 class VendedorOut(BaseModel):
     id: str
     nombre: str
@@ -78,13 +69,11 @@ class VendedorOut(BaseModel):
     class Config:
         from_attributes = True
 
-
 # ── Documentos ────────────────────────────────────────────────
 class ItemDocumento(BaseModel):
     nombre: str
     precio: int
     qty: int
-
 
 class ReceptorDocumento(BaseModel):
     nombre: str
@@ -93,13 +82,19 @@ class ReceptorDocumento(BaseModel):
     direccion: Optional[str] = None
     giro: Optional[str] = None
 
-
 class EmitirDocumento(BaseModel):
-    tipoCode: str           # "39" boleta | "33" factura
+    tipoCode: str                        # "39" boleta afecta | "41" boleta exenta | "33" factura
+    exento: bool = False                 # True → boleta exenta de IVA (Tipo 41)
+    ivaIncluido: bool = False            # True → precio ingresado ya incluye IVA
     receptor: ReceptorDocumento
     items: List[ItemDocumento]
     vendedorNombre: Optional[str] = None
-
+    condicionPago: Optional[str] = "Contado"
+    # Montos pre-calculados por el frontend
+    montoNeto: Optional[int] = None
+    montoExento: Optional[int] = None
+    montoIva: Optional[int] = None
+    montoTotal: Optional[int] = None
 
 class DocumentoOut(BaseModel):
     id: str
@@ -118,7 +113,6 @@ class DocumentoOut(BaseModel):
 
     class Config:
         from_attributes = True
-
 
 # ── Config ────────────────────────────────────────────────────
 class ConexionToggle(BaseModel):
