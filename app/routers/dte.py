@@ -13,6 +13,7 @@ from app.schemas.schemas import EmitirDocumento
 from app.services.dtecore import dtecore
 from app.services.planes import PLANES
 from app.services.email_service import enviar_email, template_documento_email, generar_pdf_documento
+from datetime import datetime, timezone, timedelta
 import os
 import uuid
 
@@ -140,6 +141,58 @@ async def emitir(
             "restantes":    docs_restantes,
             "alertaLimite": alerta_limite,
         }
+    }
+
+@router.get("/estadisticas")
+async def estadisticas(
+    user: Usuario = Depends(get_current_user),
+    empresa: Empresa = Depends(get_empresa),
+    db: AsyncSession = Depends(get_db),
+):
+    from datetime import datetime, timezone
+    from sqlalchemy import and_, extract
+
+    ahora = datetime.now(timezone.utc)
+    mes   = ahora.month
+    anio  = ahora.year
+
+    # Documentos del mes actual
+    q_mes = select(Documento).where(
+        Documento.empresa_id == empresa.id,
+        extract('month', Documento.fecha) == mes,
+        extract('year',  Documento.fecha) == anio,
+    )
+    if user.rol == "vendedor":
+        q_mes = q_mes.where(Documento.vendedor_id == user.id)
+
+    result = await db.execute(q_mes)
+    docs_mes = result.scalars().all()
+
+    def sumar(tipo_code):
+        return sum(d.monto_total for d in docs_mes if d.tipo_code == tipo_code)
+    def contar(tipo_code):
+        return sum(1 for d in docs_mes if d.tipo_code == tipo_code)
+
+    plan_info   = PLANES.get(empresa.plan, PLANES["gratuito"])
+    excedentes  = max(0, (empresa.docs_usados or 0) - plan_info["docsLimit"])
+    monto_exc   = excedentes * plan_info.get("excedentePorDoc", 0)
+
+    return {
+        "totalDocs":           empresa.docs_usados or 0,
+        "boletasMes":          contar("39"),
+        "facturasMes":         contar("33"),
+        "notasCreditoMes":     contar("61"),
+        "notasDebitoMes":      contar("56"),
+        "guiasMes":            contar("52"),
+        "montoBoletasMes":     sumar("39"),
+        "montoFacturasMes":    sumar("33"),
+        "montoNotasCreditoMes": sumar("61"),
+        "montoNotasDebitoMes": sumar("56"),
+        "montoGuiasMes":       sumar("52"),
+        "excedentes": {
+            "cantidad":  excedentes,
+            "montoNeto": monto_exc,
+        },
     }
 
 
