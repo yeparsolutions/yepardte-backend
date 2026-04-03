@@ -1,4 +1,4 @@
-# app/routers/dte.py v3
+# app/routers/dte.py v4 — soporte Tipo 41 (boleta exenta)
 import json
 import secrets
 import hashlib
@@ -41,29 +41,25 @@ async def emitir(
     plan_info = PLANES.get(empresa.plan, PLANES["gratuito"])
 
     # ── Verificar límite de folios ────────────────────────────────────────────
-    # Analogía: como un taxi con límite de km contratados —
-    # si lo superas, se cobra el excedente antes de seguir.
     if empresa.docs_usados >= plan_info["docsLimit"]:
-        # Si el plan tiene excedentes, generar link de pago
         if plan_info["excedentePorDoc"] > 0:
             from app.routers.pagos import cobrar_excedente
             from sqlalchemy import select as sa_select
             from app.models.models import Usuario as Usr
-            # Buscar email del admin de la empresa
             admin_result = await db.execute(
                 sa_select(Usr).where(Usr.empresa_id == empresa.id, Usr.rol == "admin")
             )
             admin = admin_result.scalar_one_or_none()
             admin_email = admin.email if admin else ""
 
-            init_point = await cobrar_excedente(empresa, admin_email, 10)  # cobrar de a 10 folios
+            init_point = await cobrar_excedente(empresa, admin_email, 10)
             raise HTTPException(
                 status_code=402,
                 detail={
-                    "mensaje":     f"Límite de {plan_info['docsLimit']} folios alcanzado. Puedes comprar folios adicionales.",
-                    "init_point":  init_point,
+                    "mensaje":      f"Límite de {plan_info['docsLimit']} folios alcanzado. Puedes comprar folios adicionales.",
+                    "init_point":   init_point,
                     "precio_folio": plan_info["excedentePorDoc"],
-                    "tipo":        "excedente",
+                    "tipo":         "excedente",
                 }
             )
         else:
@@ -72,20 +68,75 @@ async def emitir(
                 detail=f"Límite de {plan_info['docsLimit']} documentos alcanzado. Actualiza tu plan."
             )
 
-    # ── Calcular montos con IVA ───────────────────────────────────────────────
-    es_boleta = body.tipoCode == "39"
-    neto  = sum(item.precio * item.qty for item in body.items)
-    iva   = 0 if es_boleta else round(neto * 0.19)
-    total = neto + iva
+    # ── Determinar tipo real de DTE ───────────────────────────────────────────
+    # Tipo 39 = Boleta afecta | Tipo 41 = Boleta exenta | Tipo 33 = Factura
+    es_exento  = body.exento
+    es_boleta  = body.tipoCode in ("39", "41")
+    es_factura = body.tipoCode == "33"
+
+    # Si el frontend marcó exento pero mandó tipoCode "39", corregimos a "41"
+    tipo_code_real = body.tipoCode
+    if es_boleta and es_exento:
+        tipo_code_real = "41"
+
+    # ── Usar montos pre-calculados por el frontend ────────────────────────────
+    # El frontend ya resolvió la lógica de IVA incluido / exento / neto.
+    # Usamos sus valores directamente para mantener consistencia.
+    if body.montoTotal is not None:
+        neto_afecto = body.montoNeto   or 0
+        neto_exento = body.montoExento or 0
+        iva         = body.montoIva    or 0
+        total       = body.montoTotal
+    else:
+        # Fallback: calcular en backend (casos sin frontend YeparDTE)
+        subtotal = sum(item.precio * item.qty for item in body.items)
+        if es_exento:
+            neto_afecto = 0
+            neto_exento = subtotal
+            iva         = 0
+            total       = subtotal
+        elif es_boleta:
+            # Boleta afecta: monto total sin desglose de IVA (estándar SII boletas)
+            neto_afecto = subtotal
+            neto_exento = 0
+            iva         = 0
+            total       = subtotal
+        else:
+            # Factura: IVA desglosado
+            neto_afecto = subtotal
+            neto_exento = 0
+            iva         = round(subtotal * 0.19)
+            total       = subtotal + iva
+
+    # Tipo descriptivo para guardar en DB
+    if tipo_code_real == "41":
+        tipo_label = "Boleta Exenta"
+    elif tipo_code_real == "39":
+        tipo_label = "Boleta"
+    else:
+        tipo_label = "Factura"
+
+    # CAF a usar según tipo de documento
+    if tipo_code_real == "41":
+        caf_a_usar = empresa.caf_boleta_exenta or empresa.caf_boleta or b""
+    elif tipo_code_real == "39":
+        caf_a_usar = empresa.caf_boleta or b""
+    else:
+        caf_a_usar = empresa.caf_factura or b""
 
     try:
         resultado = await dtecore.emitir_dte(
-            tipo_code=body.tipoCode,
+            tipo_code=tipo_code_real,
+            exento=es_exento,
             receptor=body.receptor.model_dump(),
             items=[i.model_dump() for i in body.items],
             firma_cifrada=empresa.firma_digital or b"",
             firma_password=empresa.firma_password or "",
-            caf_cifrado=(empresa.caf_boleta if es_boleta else empresa.caf_factura) or b"",
+            caf_cifrado=caf_a_usar,
+            monto_neto=neto_afecto,
+            monto_exento=neto_exento,
+            monto_iva=iva,
+            monto_total=total,
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Error en DTECore: {str(e)}")
@@ -94,8 +145,8 @@ async def emitir(
         id=str(uuid.uuid4()),
         empresa_id=empresa.id,
         vendedor_id=user.id,
-        tipo="Boleta" if es_boleta else "Factura",
-        tipo_code=body.tipoCode,
+        tipo=tipo_label,
+        tipo_code=tipo_code_real,
         numero=resultado.get("numero", ""),
         folio=resultado.get("folio"),
         receptor_nombre=body.receptor.nombre,
@@ -103,38 +154,39 @@ async def emitir(
         receptor_email=body.receptor.email,
         receptor_direccion=body.receptor.direccion,
         receptor_giro=body.receptor.giro,
-        monto_neto=neto,
+        monto_neto=neto_afecto,
+        monto_exento=neto_exento,
         monto_iva=iva,
         monto_total=total,
         items=json.dumps([i.model_dump() for i in body.items]),
         estado=resultado.get("estado", "enviado"),
         track_id=resultado.get("track_id"),
+        condicion_pago=body.condicionPago,
     )
     db.add(doc)
     empresa.docs_usados = (empresa.docs_usados or 0) + 1
     await db.commit()
     await db.refresh(doc)
 
-    # Avisar si está cerca del límite (90% usado)
     docs_restantes = plan_info["docsLimit"] - empresa.docs_usados
     alerta_limite  = docs_restantes <= max(1, plan_info["docsLimit"] * 0.10)
 
     return {
         "ok": True,
         "documento": {
-            "id":       doc.id,
-            "tipo":     doc.tipo,
-            "tipoCode": doc.tipo_code,
-            "numero":   doc.numero,
-            "folio":    doc.folio,
-            "receptor": doc.receptor_nombre,
-            "rut":      doc.receptor_rut,
-            "monto":    doc.monto_total,
-            "estado":   doc.estado,
-            "fecha":    doc.fecha.isoformat(),
-            "vendedor": body.vendedorNombre or user.nombre,
+            "id":        doc.id,
+            "tipo":      doc.tipo,
+            "tipoCode":  doc.tipo_code,
+            "numero":    doc.numero,
+            "folio":     doc.folio,
+            "receptor":  doc.receptor_nombre,
+            "rut":       doc.receptor_rut,
+            "monto":     doc.monto_total,
+            "estado":    doc.estado,
+            "fecha":     doc.fecha.isoformat(),
+            "vendedor":  body.vendedorNombre or user.nombre,
+            "exento":    es_exento,
         },
-        # Info de folios para mostrar en el frontend
         "folios": {
             "usados":       empresa.docs_usados,
             "limite":       plan_info["docsLimit"],
@@ -142,6 +194,7 @@ async def emitir(
             "alertaLimite": alerta_limite,
         }
     }
+
 
 @router.get("/estadisticas")
 async def estadisticas(
@@ -156,7 +209,6 @@ async def estadisticas(
     mes   = ahora.month
     anio  = ahora.year
 
-    # Documentos del mes actual
     q_mes = select(Documento).where(
         Documento.empresa_id == empresa.id,
         extract('month', Documento.fecha) == mes,
@@ -165,7 +217,7 @@ async def estadisticas(
     if user.rol == "vendedor":
         q_mes = q_mes.where(Documento.vendedor_id == user.id)
 
-    result = await db.execute(q_mes)
+    result   = await db.execute(q_mes)
     docs_mes = result.scalars().all()
 
     def sumar(tipo_code):
@@ -173,22 +225,24 @@ async def estadisticas(
     def contar(tipo_code):
         return sum(1 for d in docs_mes if d.tipo_code == tipo_code)
 
-    plan_info   = PLANES.get(empresa.plan, PLANES["gratuito"])
-    excedentes  = max(0, (empresa.docs_usados or 0) - plan_info["docsLimit"])
-    monto_exc   = excedentes * plan_info.get("excedentePorDoc", 0)
+    plan_info  = PLANES.get(empresa.plan, PLANES["gratuito"])
+    excedentes = max(0, (empresa.docs_usados or 0) - plan_info["docsLimit"])
+    monto_exc  = excedentes * plan_info.get("excedentePorDoc", 0)
 
     return {
-        "totalDocs":           empresa.docs_usados or 0,
-        "boletasMes":          contar("39"),
-        "facturasMes":         contar("33"),
-        "notasCreditoMes":     contar("61"),
-        "notasDebitoMes":      contar("56"),
-        "guiasMes":            contar("52"),
-        "montoBoletasMes":     sumar("39"),
-        "montoFacturasMes":    sumar("33"),
+        "totalDocs":            empresa.docs_usados or 0,
+        "boletasMes":           contar("39"),
+        "boletasExentasMes":    contar("41"),
+        "facturasMes":          contar("33"),
+        "notasCreditoMes":      contar("61"),
+        "notasDebitoMes":       contar("56"),
+        "guiasMes":             contar("52"),
+        "montoBoletasMes":      sumar("39"),
+        "montoBoletasExentasMes": sumar("41"),
+        "montoFacturasMes":     sumar("33"),
         "montoNotasCreditoMes": sumar("61"),
-        "montoNotasDebitoMes": sumar("56"),
-        "montoGuiasMes":       sumar("52"),
+        "montoNotasDebitoMes":  sumar("56"),
+        "montoGuiasMes":        sumar("52"),
         "excedentes": {
             "cantidad":  excedentes,
             "montoNeto": monto_exc,
@@ -214,7 +268,7 @@ async def historial(
     if estado:
         query = query.where(Documento.estado == estado)
 
-    query = query.order_by(Documento.fecha.desc()).offset((page - 1) * limit).limit(limit)
+    query  = query.order_by(Documento.fecha.desc()).offset((page - 1) * limit).limit(limit)
     result = await db.execute(query)
     docs   = result.scalars().all()
 
@@ -357,7 +411,9 @@ async def obtener_documento(
             "receptorDireccion": doc.receptor_direccion,
             "monto":             doc.monto_total,
             "neto":              doc.monto_neto,
+            "netoExento":        getattr(doc, "monto_exento", 0) or 0,
             "iva":               doc.monto_iva,
+            "exento":            doc.tipo_code == "41",
             "estado":            doc.estado,
             "fecha":             doc.fecha.isoformat(),
             "track_id":          doc.track_id,
