@@ -28,7 +28,7 @@ PLANES: dict[str, dict] = {
         "precio":            19990,     # IVA incluido
         "docsLimit":         1000,      # 1.000 folios incluidos
         "vendedoresLimit":   999999,    # multiusuario ilimitado
-        "excedentePorDoc":   12,        # ~$10-$15 por folio adicional (IVA incluido)
+        "excedentePorDoc":   15,        # $15 por folio adicional (IVA incluido)
         "tiposDoc":          [
             "Boleta",
             "Factura",
