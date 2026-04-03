@@ -3,7 +3,6 @@ import json
 import secrets
 import hashlib
 import hmac
-from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -19,24 +18,16 @@ import uuid
 
 router = APIRouter(prefix="/api/dte", tags=["dte"])
 
-# Clave para firmar tokens de descarga pública
 SECRET_KEY = os.getenv("SECRET_KEY", "changeme")
 
 
 def _generar_token_pdf(doc_id: str) -> str:
-    """
-    Genera un token HMAC para descarga pública del PDF.
-    Analogía: el número de seguimiento de un paquete —
-    cualquiera con ese número puede rastrear su paquete,
-    pero no puede ver el de otra persona.
-    """
     msg = f"{doc_id}:{SECRET_KEY}".encode()
     return hmac.new(SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()[:32]
 
 
 def _verificar_token_pdf(doc_id: str, token: str) -> bool:
-    esperado = _generar_token_pdf(doc_id)
-    return hmac.compare_digest(esperado, token)
+    return hmac.compare_digest(_generar_token_pdf(doc_id), token)
 
 
 @router.post("/emitir")
@@ -47,12 +38,40 @@ async def emitir(
     db: AsyncSession = Depends(get_db),
 ):
     plan_info = PLANES.get(empresa.plan, PLANES["gratuito"])
-    if empresa.docs_usados >= plan_info["docsLimit"]:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Límite de {plan_info['docsLimit']} documentos alcanzado. Actualiza tu plan."
-        )
 
+    # ── Verificar límite de folios ────────────────────────────────────────────
+    # Analogía: como un taxi con límite de km contratados —
+    # si lo superas, se cobra el excedente antes de seguir.
+    if empresa.docs_usados >= plan_info["docsLimit"]:
+        # Si el plan tiene excedentes, generar link de pago
+        if plan_info["excedentePorDoc"] > 0:
+            from app.routers.pagos import cobrar_excedente
+            from sqlalchemy import select as sa_select
+            from app.models.models import Usuario as Usr
+            # Buscar email del admin de la empresa
+            admin_result = await db.execute(
+                sa_select(Usr).where(Usr.empresa_id == empresa.id, Usr.rol == "admin")
+            )
+            admin = admin_result.scalar_one_or_none()
+            admin_email = admin.email if admin else ""
+
+            init_point = await cobrar_excedente(empresa, admin_email, 10)  # cobrar de a 10 folios
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "mensaje":     f"Límite de {plan_info['docsLimit']} folios alcanzado. Puedes comprar folios adicionales.",
+                    "init_point":  init_point,
+                    "precio_folio": plan_info["excedentePorDoc"],
+                    "tipo":        "excedente",
+                }
+            )
+        else:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Límite de {plan_info['docsLimit']} documentos alcanzado. Actualiza tu plan."
+            )
+
+    # ── Calcular montos con IVA ───────────────────────────────────────────────
     es_boleta = body.tipoCode == "39"
     neto  = sum(item.precio * item.qty for item in body.items)
     iva   = 0 if es_boleta else round(neto * 0.19)
@@ -95,14 +114,33 @@ async def emitir(
     await db.commit()
     await db.refresh(doc)
 
-    return {"ok": True, "documento": {
-        "id": doc.id, "tipo": doc.tipo, "tipoCode": doc.tipo_code,
-        "numero": doc.numero, "folio": doc.folio,
-        "receptor": doc.receptor_nombre, "rut": doc.receptor_rut,
-        "monto": doc.monto_total, "estado": doc.estado,
-        "fecha": doc.fecha.isoformat(),
-        "vendedor": body.vendedorNombre or user.nombre,
-    }}
+    # Avisar si está cerca del límite (90% usado)
+    docs_restantes = plan_info["docsLimit"] - empresa.docs_usados
+    alerta_limite  = docs_restantes <= max(1, plan_info["docsLimit"] * 0.10)
+
+    return {
+        "ok": True,
+        "documento": {
+            "id":       doc.id,
+            "tipo":     doc.tipo,
+            "tipoCode": doc.tipo_code,
+            "numero":   doc.numero,
+            "folio":    doc.folio,
+            "receptor": doc.receptor_nombre,
+            "rut":      doc.receptor_rut,
+            "monto":    doc.monto_total,
+            "estado":   doc.estado,
+            "fecha":    doc.fecha.isoformat(),
+            "vendedor": body.vendedorNombre or user.nombre,
+        },
+        # Info de folios para mostrar en el frontend
+        "folios": {
+            "usados":       empresa.docs_usados,
+            "limite":       plan_info["docsLimit"],
+            "restantes":    docs_restantes,
+            "alertaLimite": alerta_limite,
+        }
+    }
 
 
 @router.get("/historial")
@@ -125,17 +163,22 @@ async def historial(
 
     query = query.order_by(Documento.fecha.desc()).offset((page - 1) * limit).limit(limit)
     result = await db.execute(query)
-    docs = result.scalars().all()
+    docs   = result.scalars().all()
 
     count_q = select(func.count()).select_from(Documento).where(Documento.empresa_id == empresa.id)
-    total = (await db.execute(count_q)).scalar()
+    total   = (await db.execute(count_q)).scalar()
 
     return {
         "documentos": [{
-            "id": d.id, "tipo": d.tipo, "tipoCode": d.tipo_code,
-            "numero": d.numero, "receptor": d.receptor_nombre,
-            "rut": d.receptor_rut, "monto": d.monto_total,
-            "estado": d.estado, "fecha": d.fecha.isoformat(),
+            "id":       d.id,
+            "tipo":     d.tipo,
+            "tipoCode": d.tipo_code,
+            "numero":   d.numero,
+            "receptor": d.receptor_nombre,
+            "rut":      d.receptor_rut,
+            "monto":    d.monto_total,
+            "estado":   d.estado,
+            "fecha":    d.fecha.isoformat(),
             "track_id": d.track_id,
         } for d in docs],
         "total": total,
@@ -151,9 +194,6 @@ async def enviar_documento_email(
     empresa: Empresa = Depends(get_empresa),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Envía email al receptor con botón de descarga del PDF.
-    """
     result = await db.execute(
         select(Documento).where(Documento.id == doc_id, Documento.empresa_id == empresa.id)
     )
@@ -165,7 +205,6 @@ async def enviar_documento_email(
     if not doc.receptor_email:
         raise HTTPException(status_code=400, detail="Este documento no tiene email del receptor.")
 
-    # Generar token de descarga pública para el botón del email
     token     = _generar_token_pdf(doc_id)
     fecha_fmt = doc.fecha.strftime("%d/%m/%Y")
 
@@ -197,28 +236,19 @@ async def pdf_publico(
     token: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Descarga pública del PDF via token HMAC — sin autenticación JWT.
-    El receptor del email puede descargar el PDF con el link del botón.
-    Analogía: el link de seguimiento del paquete — público pero seguro.
-    """
-    # Verificar token
     if not _verificar_token_pdf(doc_id, token):
         raise HTTPException(status_code=403, detail="Token inválido")
 
-    # Buscar documento
     result = await db.execute(select(Documento).where(Documento.id == doc_id))
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Documento no encontrado")
 
-    # Buscar empresa
     empresa_result = await db.execute(select(Empresa).where(Empresa.id == doc.empresa_id))
     empresa = empresa_result.scalar_one_or_none()
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
 
-    # Generar PDF
     try:
         pdf_bytes = generar_pdf_documento(doc, empresa)
     except Exception as e:
