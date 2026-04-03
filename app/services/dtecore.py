@@ -1,107 +1,119 @@
-# app/services/dtecore.py
-#
-# Adaptador para YeparDTECore
-# ─────────────────────────────────────────────────────────────
-# Cuando tengas los endpoints de DTECore listos, solo modifica
-# este archivo. El resto del sistema no cambia.
-#
-import httpx
-from app.core.config import get_settings
-from app.core.security import decrypt_firma
+from pydantic import BaseModel, EmailStr, field_validator
+from typing import Optional, List
+from datetime import datetime
 
-settings = get_settings()
+# ── Auth ──────────────────────────────────────────────────────
+class LoginAdmin(BaseModel):
+    email: EmailStr
+    password: str
 
+class LoginVendedor(BaseModel):
+    adminRut: str
+    pin: str
 
-class DTECoreClient:
-    """Cliente HTTP para YeparDTECore."""
+class RegistroEmpresa(BaseModel):
+    nombre: str
+    rut: str
+    giro: str
+    direccion: str
+    comuna: str
+    ciudad: str
+    email: EmailStr
+    password: str
 
-    def __init__(self):
-        self.base_url = settings.DTECORE_URL
-        self.api_key  = settings.DTECORE_API_KEY
+class TokenResponse(BaseModel):
+    token: str
+    usuario: dict
 
-    def _headers(self) -> dict:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+# ── Empresa ───────────────────────────────────────────────────
+class EmpresaUpdate(BaseModel):
+    nombre: Optional[str] = None
+    giro: Optional[str] = None
+    direccion: Optional[str] = None
+    comuna: Optional[str] = None
+    ciudad: Optional[str] = None
 
-    async def emitir_dte(
-        self,
-        *,
-        tipo_code: str,
-        receptor: dict,
-        items: list[dict],
-        firma_cifrada: bytes,
-        firma_password: str,
-        caf_cifrado: bytes,
-    ) -> dict:
-        """
-        Envía un DTE a DTECore para que lo firme y lo envíe al SII.
+class EmpresaOut(BaseModel):
+    id: str
+    nombre: str
+    rut: str
+    giro: str
+    direccion: str
+    comuna: str
+    ciudad: str
+    plan: str
+    docs_usados: int
+    tributario_completo: bool
+    firma_vencimiento: Optional[datetime] = None
 
-        Retorna:
-          {
-            "folio": int,
-            "numero": str,
-            "xml_firmado": str (base64),
-            "track_id": str,
-            "estado": str
-          }
+    class Config:
+        from_attributes = True
 
-        TODO: Implementar cuando DTECore esté documentado.
-        Por ahora retorna un mock para que el frontend funcione.
-        """
-        if not self.base_url:
-            # ── MOCK hasta tener DTECore documentado ──────────
-            import random
-            es_boleta = tipo_code == "39"
-            folio = random.randint(1000, 9999)
-            return {
-                "folio": folio,
-                "numero": f"{'B' if es_boleta else 'F'}-{folio}",
-                "xml_firmado": "",
-                "track_id": f"TK{folio}",
-                "estado": "aceptado",
-            }
+# ── Vendedores ────────────────────────────────────────────────
+class VendedorCreate(BaseModel):
+    nombre: str
+    pin: str
 
-        # ── Implementación real ────────────────────────────────
-        firma_bytes  = decrypt_firma(firma_cifrada)
-        caf_bytes    = decrypt_firma(caf_cifrado)
+    @field_validator("pin")
+    @classmethod
+    def pin_largo(cls, v):
+        if len(v) < 4:
+            raise ValueError("El PIN debe tener al menos 4 dígitos")
+        return v
 
-        # Ajustar payload según la API real de DTECore cuando esté lista
-        payload = {
-            "tipo_dte": int(tipo_code),
-            "receptor": receptor,
-            "items": items,
-            "firma": firma_bytes.hex(),           # o base64, según DTECore
-            "firma_password": firma_password,
-            "caf": caf_bytes.decode("utf-8"),     # CAF es XML
-        }
+class VendedorOut(BaseModel):
+    id: str
+    nombre: str
+    creado_en: datetime
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{self.base_url}/api/dte/emitir",
-                json=payload,
-                headers=self._headers(),
-            )
-            resp.raise_for_status()
-            return resp.json()
+    class Config:
+        from_attributes = True
 
-    async def estado_dte(self, track_id: str) -> dict:
-        """
-        Consulta el estado de un DTE en el SII via DTECore.
-        TODO: Implementar cuando DTECore esté documentado.
-        """
-        if not self.base_url:
-            return {"track_id": track_id, "estado": "aceptado"}
+# ── Documentos ────────────────────────────────────────────────
+class ItemDocumento(BaseModel):
+    nombre: str
+    precio: int
+    qty: int
 
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{self.base_url}/api/dte/estado/{track_id}",
-                headers=self._headers(),
-            )
-            resp.raise_for_status()
-            return resp.json()
+class ReceptorDocumento(BaseModel):
+    nombre: str
+    rut: str
+    email: Optional[str] = None
+    direccion: Optional[str] = None
+    giro: Optional[str] = None
 
+class EmitirDocumento(BaseModel):
+    tipoCode: str                        # "39" boleta afecta | "41" boleta exenta | "33" factura
+    exento: bool = False                 # True → boleta exenta de IVA (Tipo 41)
+    ivaIncluido: bool = False            # True → precio ingresado ya incluye IVA
+    receptor: ReceptorDocumento
+    items: List[ItemDocumento]
+    vendedorNombre: Optional[str] = None
+    condicionPago: Optional[str] = "Contado"
+    # Montos pre-calculados por el frontend
+    montoNeto: Optional[int] = None
+    montoExento: Optional[int] = None
+    montoIva: Optional[int] = None
+    montoTotal: Optional[int] = None
 
-# Instancia global
-dtecore = DTECoreClient()
+class DocumentoOut(BaseModel):
+    id: str
+    tipo: str
+    tipo_code: str
+    numero: str
+    folio: Optional[int]
+    receptor_nombre: str
+    receptor_rut: str
+    monto_neto: int
+    monto_iva: int
+    monto_total: int
+    estado: str
+    fecha: datetime
+    track_id: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+# ── Config ────────────────────────────────────────────────────
+class ConexionToggle(BaseModel):
+    activa: bool
