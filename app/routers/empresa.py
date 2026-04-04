@@ -4,13 +4,13 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.deps import get_current_admin, get_empresa
-from app.core.security import encrypt_firma, decrypt_firma
+from app.core.security import encrypt_firma
 from app.models.models import Empresa, Usuario
 from app.schemas.schemas import EmpresaOut, EmpresaUpdate
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/empresa", tags=["empresa"])
 
-# Formatos de imagen permitidos para el logo
 LOGO_TIPOS_PERMITIDOS = {
     "image/png", "image/jpeg", "image/jpg",
     "image/svg+xml", "image/webp",
@@ -78,36 +78,35 @@ async def subir_caf(
     return {"ok": True, "mensaje": f"CAF tipo {tipo} cargado correctamente"}
 
 
-# ── Logo de la empresa ────────────────────────────────────────────────────────
-# Analogía: el membrete de una empresa — aparece en el encabezado
-# de todas las boletas y facturas que emite.
+# ── Logo ──────────────────────────────────────────────────────────────────────
 
 @router.get("/logo")
 async def obtener_logo(empresa: Empresa = Depends(get_empresa)):
     """
-    Retorna el logo actual como base64 para mostrarlo en el frontend
-    y en el generador de PDFs.
+    Retorna logo como base64 + ancho guardado.
+    El frontend usa esto para previsualizar y para generar los PDFs.
     """
     if not empresa.logo:
-        return {"logo_base64": None}
+        return {"logo_base64": None, "logo_ancho": empresa.logo_ancho or 70}
 
-    # Detectar tipo de imagen por los primeros bytes
-    # Analogía: el tipo MIME es como el idioma del archivo —
-    # PNG, JPEG, SVG hablan distinto pero todos son imágenes
+    # Detectar MIME por magic bytes
     logo_bytes = empresa.logo
     if logo_bytes[:4] == b'\x89PNG':
         mime = "image/png"
     elif logo_bytes[:2] == b'\xff\xd8':
         mime = "image/jpeg"
-    elif logo_bytes[:4] == b'<svg' or b'<svg' in logo_bytes[:100]:
+    elif b'<svg' in logo_bytes[:200]:
         mime = "image/svg+xml"
     elif logo_bytes[:4] == b'RIFF':
         mime = "image/webp"
     else:
-        mime = "image/png"  # fallback
+        mime = "image/png"
 
     b64 = base64.b64encode(logo_bytes).decode("utf-8")
-    return {"logo_base64": f"data:{mime};base64,{b64}"}
+    return {
+        "logo_base64": f"data:{mime};base64,{b64}",
+        "logo_ancho":  empresa.logo_ancho or 70,
+    }
 
 
 @router.post("/logo")
@@ -117,28 +116,43 @@ async def subir_logo(
     admin: Usuario = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Sube y guarda el logo de la empresa.
-    Máximo 500KB — PNG, JPG, SVG o WEBP.
-    """
+    """Sube y guarda el logo en la BD. Máx 500KB."""
     content_type = archivo.content_type or ""
     if content_type not in LOGO_TIPOS_PERMITIDOS:
         raise HTTPException(
             status_code=400,
             detail="Formato no permitido. Usa PNG, JPG, SVG o WEBP."
         )
-
     contenido = await archivo.read()
-
     if len(contenido) > LOGO_MAX_BYTES:
         raise HTTPException(
             status_code=400,
-            detail=f"El logo no debe superar 500KB. Tamaño recibido: {len(contenido) // 1024}KB"
+            detail=f"El logo no debe superar 500KB. Recibido: {len(contenido)//1024}KB"
         )
 
+    # Guardar en BD — persiste entre sesiones
     empresa.logo = contenido
     await db.commit()
-    return {"ok": True, "mensaje": "Logo guardado correctamente"}
+    return {"ok": True, "mensaje": "Logo guardado en la base de datos"}
+
+
+class LogoAnchoBody(BaseModel):
+    ancho: int  # px, entre 40 y 200
+
+
+@router.put("/logo/ancho")
+async def actualizar_ancho_logo(
+    body: LogoAnchoBody,
+    empresa: Empresa = Depends(get_empresa),
+    admin: Usuario = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Guarda el ancho preferido del logo en px."""
+    if not (40 <= body.ancho <= 200):
+        raise HTTPException(status_code=400, detail="El ancho debe estar entre 40 y 200 px")
+    empresa.logo_ancho = body.ancho
+    await db.commit()
+    return {"ok": True, "logo_ancho": body.ancho}
 
 
 @router.delete("/logo")
@@ -148,6 +162,7 @@ async def eliminar_logo(
     db: AsyncSession = Depends(get_db),
 ):
     """Elimina el logo de la empresa."""
-    empresa.logo = None
+    empresa.logo       = None
+    empresa.logo_ancho = 70
     await db.commit()
     return {"ok": True, "mensaje": "Logo eliminado"}
