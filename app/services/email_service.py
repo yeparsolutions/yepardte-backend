@@ -162,11 +162,12 @@ def _html_carta_dte(doc, empresa, logo_base64: str | None, logo_ancho: int) -> s
 <html lang="es"><head><meta charset="UTF-8">
 <title>{tipo_label} N&deg; {doc.numero}</title>
 <style>
+  @page {{ size: A4 portrait; margin: 12mm; }}
   * {{ margin:0; padding:0; box-sizing:border-box; }}
-  body {{ font-family:Arial,Helvetica,sans-serif; font-size:11px; color:#000; background:#fff; }}
-  @page {{ size: A4; margin: 12mm; }}
+  html, body {{ width: 210mm; font-family:Arial,Helvetica,sans-serif; font-size:11px; color:#000; background:#fff; }}
+  table {{ border-collapse: collapse; }}
 </style>
-</head><body>
+</head><body style="width:186mm; margin:0; padding:0;">
 
 <!-- HEADER: emisor izq + doc-box der -->
 <table width="100%" cellpadding="0" cellspacing="0"
