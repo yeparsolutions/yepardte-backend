@@ -322,18 +322,11 @@ async def enviar_documento_email(
     fecha_fmt = doc.fecha.strftime("%d/%m/%Y")
 
     # ── Generar PDF adjunto ───────────────────────────────────────────────────
-    # Analogía: el frontend genera el "original" y se lo pasa al servidor
-    # para meterlo en el sobre — así el PDF del email es idéntico al de la app.
+    # Siempre usa el HTML de tablas del backend (compatible weasyprint).
+    # El frontend solo provee datos — el backend controla el formato del PDF.
     adjuntos = []
     try:
-        html_para_pdf = body.html_documento or generar_pdf_documento.__module__
-        if body.html_documento:
-            # El frontend mandó el HTML carta ya generado — convertir a PDF
-            from weasyprint import HTML as WeasyprintHTML
-            pdf_bytes  = WeasyprintHTML(string=body.html_documento).write_pdf()
-        else:
-            # Fallback: generar con el HTML del backend (tablas, compatible weasyprint)
-            pdf_bytes = generar_pdf_documento(doc, empresa)
+        pdf_bytes  = generar_pdf_documento(doc, empresa)
         nombre_pdf = f"{doc.tipo}-{doc.numero}.pdf".replace(" ", "_")
         adjuntos   = [{"filename": nombre_pdf, "content": pdf_bytes}]
     except Exception as e:
