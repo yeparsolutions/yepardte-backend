@@ -13,7 +13,7 @@ from app.models.models import Documento, Empresa, Usuario
 from app.schemas.schemas import EmitirDocumento
 from app.services.dtecore import dtecore
 from app.services.planes import PLANES
-from app.services.email_service import enviar_email, template_documento_email, generar_pdf_documento
+from app.services.email_service import enviar_email, template_documento_email
 from datetime import datetime, timezone, timedelta
 import os
 import uuid
@@ -316,16 +316,23 @@ async def enviar_documento_email(
     token     = _generar_token_pdf(doc_id)
     fecha_fmt = doc.fecha.strftime("%d/%m/%Y")
 
-    # ── Generar PDF adjunto — mismo HTML que la app ──────────────────────────
-    # Analogía: antes de meter la carta en el sobre se imprime en la misma
-    # imprenta que la app — el receptor recibe exactamente lo que ve el usuario.
+    # ── Obtener PDF llamando al propio endpoint pdf-publico vía httpx ──────────
+    # Analogía: el servidor se hace pasar por un cliente y descarga su propio
+    # PDF — usa el mismo generador que el botón en la app, sin librerías extra.
     adjuntos = []
     try:
-        pdf_bytes  = generar_pdf_documento(doc, empresa)
-        nombre_pdf = f"{doc.tipo}-{doc.numero}.pdf".replace(" ", "_")
-        adjuntos   = [{"filename": nombre_pdf, "content": pdf_bytes}]
+        import httpx as _httpx
+        _backend = os.getenv("BACKEND_URL", "http://localhost:8000")
+        _pdf_url = f"{_backend}/api/dte/{doc_id}/pdf-publico?token={token}"
+        async with _httpx.AsyncClient(timeout=30.0) as _client:
+            _resp = await _client.get(_pdf_url)
+        if _resp.status_code == 200:
+            nombre_pdf = f"{doc.tipo}-{doc.numero}.pdf".replace(" ", "_")
+            adjuntos   = [{"filename": nombre_pdf, "content": _resp.content}]
+        else:
+            logging.warning(f"[DTE] pdf-publico retornó {_resp.status_code} para {doc_id}")
     except Exception as e:
-        logging.warning(f"[DTE] PDF adjunto falló para {doc_id}: {e}")
+        logging.warning(f"[DTE] No se pudo obtener PDF adjunto para {doc_id}: {e}")
         # Continúa sin adjunto — el email se envía igual con el botón de descarga
 
     ok = enviar_email(
