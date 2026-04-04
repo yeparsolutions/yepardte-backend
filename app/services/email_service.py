@@ -1,10 +1,14 @@
 # app/services/email_service.py
 # ============================================================
 # YeparDTE — Servicio de Email via Resend API
+# El PDF adjunto usa el mismo HTML que el frontend (generarPDF.js)
+# para que el receptor reciba exactamente lo que ve en la app.
+# Analogía: la misma imprenta para el email y para la pantalla.
 # ============================================================
 
 import os
 import json
+import base64
 import resend
 from dotenv import load_dotenv
 
@@ -18,7 +22,10 @@ BACKEND_URL     = os.getenv("BACKEND_URL", "https://yepardte-backend-production.
 
 
 def enviar_email(destinatario: str, asunto: str, html: str, adjuntos: list = None) -> bool:
-    """Envía un email HTML via Resend."""
+    """
+    Envía un email HTML via Resend con adjuntos opcionales.
+    adjuntos: [{"filename": "doc.pdf", "content": bytes}]
+    """
     if not RESEND_API_KEY:
         print("[EMAIL ERROR] RESEND_API_KEY no configurado")
         return False
@@ -27,12 +34,22 @@ def enviar_email(destinatario: str, asunto: str, html: str, adjuntos: list = Non
         return False
     try:
         resend.api_key = RESEND_API_KEY
-        response = resend.Emails.send({
+        params = {
             "from":    f"{EMAIL_FROM_NAME} <{EMAIL_FROM}>",
             "to":      [destinatario],
             "subject": asunto,
             "html":    html,
-        })
+        }
+        # Adjuntar archivos — Resend espera content en base64
+        if adjuntos:
+            params["attachments"] = [
+                {
+                    "filename": a["filename"],
+                    "content":  base64.b64encode(a["content"]).decode("utf-8"),
+                }
+                for a in adjuntos
+            ]
+        response = resend.Emails.send(params)
         if response and response.get("id"):
             print(f"[EMAIL OK] Enviado a {destinatario} — ID: {response['id']}")
             return True
@@ -43,32 +60,13 @@ def enviar_email(destinatario: str, asunto: str, html: str, adjuntos: list = Non
         return False
 
 
-# ── Generador de PDF con formato oficial DTE ──────────────────────────────────
+# ── Generador de PDF — mismo HTML que generarPDF.js del frontend ──────────────
 
-def generar_pdf_documento(doc, empresa) -> bytes:
+def _html_carta_dte(doc, empresa, logo_base64: str | None, logo_ancho: int) -> str:
     """
-    Genera el PDF del DTE replicando el formato oficial:
-    - RUT + tipo doc arriba izquierda
-    - Recuadro rojo arriba derecha con número
-    - Sección receptor en fondo gris
-    - Tabla de items con header oscuro
-    - Totales alineados a la derecha
-    - Timbre electrónico al pie
-    Analogía: la imprenta oficial que produce el documento tributario
-    con todos los elementos requeridos por el SII.
+    Replica el htmlCarta() de generarPDF.js del frontend.
+    Carta A4 idéntica a la que ve el usuario en la app.
     """
-    import io
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib import colors
-    from reportlab.lib.units import mm, cm
-    from reportlab.platypus import (
-        SimpleDocTemplate, Table, TableStyle, Paragraph,
-        Spacer, HRFlowable
-    )
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
-
-    # ── Parsear items ─────────────────────────────────────────────────────────
     items_raw = doc.items
     if isinstance(items_raw, str):
         items_list = json.loads(items_raw or "[]")
@@ -77,248 +75,237 @@ def generar_pdf_documento(doc, empresa) -> bytes:
     else:
         items_list = []
 
-    # ── Calcular montos ───────────────────────────────────────────────────────
-    es_boleta  = doc.tipo_code == "39" or doc.tipo == "Boleta"
-    tipo_label = "BOLETA ELECTRÓNICA" if es_boleta else "FACTURA ELECTRÓNICA"
-    neto       = doc.monto_neto  or 0
-    iva        = doc.monto_iva   or 0
-    total      = doc.monto_total or 0
-    folio_str  = str(doc.folio or "").zfill(11)
-
-    # Formatear número con separadores chilenos
-    def fmt(n): return f"${n:,.0f}".replace(",", ".")
-
-    # ── Estilos ───────────────────────────────────────────────────────────────
-    COLOR_ROJO    = colors.HexColor("#cc0000")
-    COLOR_OSCURO  = colors.HexColor("#333333")
-    COLOR_GRIS    = colors.HexColor("#f5f5f5")
-    COLOR_BORDE   = colors.HexColor("#dddddd")
-    COLOR_MUTED   = colors.HexColor("#555555")
-    COLOR_HEADER  = colors.HexColor("#333333")
-
-    def estilo(size=9, bold=False, color=colors.black, align=TA_LEFT):
-        return ParagraphStyle(
-            'x', fontSize=size,
-            fontName='Helvetica-Bold' if bold else 'Helvetica',
-            textColor=color, alignment=align,
-            leading=size * 1.3, spaceAfter=0, spaceBefore=0,
-        )
-
-    buffer  = io.BytesIO()
-    doc_pdf = SimpleDocTemplate(
-        buffer, pagesize=A4,
-        topMargin=12*mm, bottomMargin=12*mm,
-        leftMargin=12*mm, rightMargin=12*mm,
+    es_exenta  = getattr(doc, "tipo_code", "") == "41"
+    es_boleta  = getattr(doc, "tipo_code", "") in ("39", "41") or doc.tipo in ("Boleta", "Boleta Exenta")
+    tipo_label = (
+        "BOLETA EXENTA ELECTRÓNICA" if es_exenta else
+        "BOLETA ELECTRÓNICA"        if es_boleta else
+        "FACTURA ELECTRÓNICA"
     )
-    elementos = []
+    color_doc   = "#1a56db" if es_boleta else "#c00"
+    neto        = doc.monto_neto   or 0
+    iva         = doc.monto_iva    or 0
+    total       = doc.monto_total  or 0
+    neto_exento = getattr(doc, "monto_exento", 0) or 0
+    folio_str   = str(doc.folio or "").zfill(11)
+    fecha_str   = doc.fecha.strftime("%d/%m/%Y") if doc.fecha else ""
+    cond_pago   = getattr(doc, "condicion_pago", "Contado") or "Contado"
 
-    # ── 1. HEADER: emisor izquierda + recuadro rojo derecha ───────────────────
-    empresa_nombre = getattr(empresa, 'razon_social', None) or empresa.nombre or "Empresa"
-    empresa_rut    = empresa.rut or "—"
-    empresa_giro   = empresa.giro or "—"
-    empresa_dir    = f"{empresa.direccion or ''} - {(empresa.comuna or '').upper()} - {(empresa.ciudad or '').upper()}"
+    empresa_nombre = getattr(empresa, "razon_social", None) or empresa.nombre or ""
     empresa_ciudad = (empresa.ciudad or "SANTIAGO").upper()
+    empresa_comuna = (empresa.comuna or "").upper()
+    empresa_tel    = getattr(empresa, "telefono", "") or ""
 
-    # Columna izquierda — datos emisor
-    emisor_data = [
-        [Paragraph(f"R.U.T. {empresa_rut}", estilo(12, bold=True))],
-        [Paragraph(tipo_label, estilo(16, bold=True))],
-        [Paragraph(f"N° {folio_str}", estilo(11, bold=True, color=COLOR_OSCURO))],
-        [Paragraph(f"S.I.I. — {empresa_ciudad}", estilo(8, color=COLOR_MUTED))],
-        [Spacer(1, 4)],
-        [Paragraph(empresa_nombre, estilo(11, bold=True))],
-        [Paragraph(f"Giro: {empresa_giro}", estilo(9, color=COLOR_OSCURO))],
-        [Paragraph(empresa_dir, estilo(9, color=COLOR_OSCURO))],
-    ]
-    tabla_emisor = Table(emisor_data, colWidths=[120*mm])
-    tabla_emisor.setStyle(TableStyle([
-        ("PADDING", (0, 0), (-1, -1), 1),
-        ("VALIGN",  (0, 0), (-1, -1), "TOP"),
-    ]))
+    def fmt(n):
+        return f"${n:,.0f}".replace(",", ".")
 
-    # Columna derecha — recuadro rojo con tipo y número
-    recuadro_data = [
-        [Paragraph(tipo_label, estilo(10, bold=True, color=COLOR_ROJO, align=TA_CENTER))],
-        [Paragraph(f"N° {folio_str}", estilo(18, bold=True, color=COLOR_ROJO, align=TA_CENTER))],
-    ]
-    tabla_recuadro = Table(recuadro_data, colWidths=[60*mm])
-    tabla_recuadro.setStyle(TableStyle([
-        ("BOX",     (0, 0), (-1, -1), 2, COLOR_ROJO),
-        ("ROUNDED", (0, 0), (-1, -1), 4),
-        ("PADDING", (0, 0), (-1, -1), 8),
-        ("VALIGN",  (0, 0), (-1, -1), "MIDDLE"),
-        ("ALIGN",   (0, 0), (-1, -1), "CENTER"),
-    ]))
-
-    tabla_header = Table(
-        [[tabla_emisor, tabla_recuadro]],
-        colWidths=[125*mm, 61*mm],
-    )
-    tabla_header.setStyle(TableStyle([
-        ("VALIGN",  (0, 0), (-1, -1), "TOP"),
-        ("PADDING", (0, 0), (-1, -1), 0),
-    ]))
-    elementos.append(tabla_header)
-    elementos.append(HRFlowable(width="100%", thickness=2, color=colors.black, spaceAfter=6))
-
-    # ── 2. AVISO sin certificación ────────────────────────────────────────────
-    if not getattr(doc, 'certificado', False):
-        aviso = Table(
-            [[Paragraph(
-                "⚠ DOCUMENTO INTERNO — SIN VALIDEZ FISCAL — PENDIENTE CERTIFICACIÓN DTE",
-                estilo(8, bold=True, color=colors.HexColor("#856404"), align=TA_CENTER)
-            )]],
-            colWidths=[186*mm],
-        )
-        aviso.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff3cd")),
-            ("BOX",        (0, 0), (-1, -1), 1, colors.HexColor("#ffc107")),
-            ("PADDING",    (0, 0), (-1, -1), 5),
-        ]))
-        elementos.append(aviso)
-        elementos.append(Spacer(1, 4))
-
-    # ── 3. RECEPTOR ───────────────────────────────────────────────────────────
-    def campo_receptor(label, valor):
-        return [
-            Paragraph(label, estilo(7, bold=True, color=COLOR_MUTED)),
-            Paragraph(str(valor or ""), estilo(9, bold=True)),
-        ]
-
-    fecha_emision = doc.fecha.strftime("%d/%m/%Y") if hasattr(doc.fecha, 'strftime') else str(doc.fecha)[:10]
-
-    receptor_data = [
-        [
-            Paragraph("SEÑOR(ES):", estilo(7, bold=True, color=COLOR_MUTED)),
-            Paragraph(doc.receptor_nombre or "—", estilo(9, bold=True)),
-            Paragraph("", estilo(7)),
-            Paragraph("", estilo(9)),
-        ],
-        [
-            Paragraph("R.U.T.:", estilo(7, bold=True, color=COLOR_MUTED)),
-            Paragraph(doc.receptor_rut or "—", estilo(9, bold=True)),
-            Paragraph("GIRO:", estilo(7, bold=True, color=COLOR_MUTED)),
-            Paragraph(doc.receptor_giro or "—", estilo(9, bold=True)),
-        ],
-        [
-            Paragraph("DIRECCIÓN:", estilo(7, bold=True, color=COLOR_MUTED)),
-            Paragraph(doc.receptor_direccion or "—", estilo(9, bold=True)),
-            Paragraph("", estilo(7)),
-            Paragraph("", estilo(9)),
-        ],
-        [
-            Paragraph("FECHA EMISIÓN:", estilo(7, bold=True, color=COLOR_MUTED)),
-            Paragraph(fecha_emision, estilo(9, bold=True)),
-            Paragraph("CONDICIÓN PAGO:", estilo(7, bold=True, color=COLOR_MUTED)),
-            Paragraph("Contado", estilo(9, bold=True)),
-        ],
-    ]
-    tabla_receptor = Table(receptor_data, colWidths=[28*mm, 65*mm, 28*mm, 65*mm])
-    tabla_receptor.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), COLOR_GRIS),
-        ("BOX",        (0, 0), (-1, -1), 1, COLOR_BORDE),
-        ("GRID",       (0, 0), (-1, -1), 0.3, COLOR_BORDE),
-        ("PADDING",    (0, 0), (-1, -1), 4),
-        ("VALIGN",     (0, 0), (-1, -1), "TOP"),
-        ("SPAN",       (1, 0), (3, 0)),  # nombre ocupa todo el ancho
-        ("SPAN",       (1, 2), (3, 2)),  # dirección ocupa todo el ancho
-    ]))
-    elementos.append(tabla_receptor)
-    elementos.append(Spacer(1, 6))
-
-    # ── 4. TABLA DE ÍTEMS ─────────────────────────────────────────────────────
-    items_header = [
-        Paragraph("N°",          estilo(8, bold=True, color=colors.white, align=TA_CENTER)),
-        Paragraph("CÓDIGO",      estilo(8, bold=True, color=colors.white)),
-        Paragraph("DESCRIPCIÓN", estilo(8, bold=True, color=colors.white)),
-        Paragraph("CANT.",       estilo(8, bold=True, color=colors.white, align=TA_RIGHT)),
-        Paragraph("PRECIO UNIT.",estilo(8, bold=True, color=colors.white, align=TA_RIGHT)),
-        Paragraph("%DESC.",      estilo(8, bold=True, color=colors.white, align=TA_RIGHT)),
-        Paragraph("VALOR",       estilo(8, bold=True, color=colors.white, align=TA_RIGHT)),
-    ]
-    items_rows = [items_header]
+    # ── Filas de items ────────────────────────────────────────────────────────
+    items_html = ""
     for i, item in enumerate(items_list):
-        qty      = item.get("qty", 1)
-        precio   = item.get("precio", 0)
+        qty      = item.get("qty", item.get("cant", 1))
+        precio   = item.get("precio", item.get("precioUnit", 0))
         subtotal = qty * precio
-        nombre   = item.get("nombre", item.get("desc", ""))
-        items_rows.append([
-            Paragraph(str(i + 1),              estilo(9, align=TA_CENTER)),
-            Paragraph("",                       estilo(9)),
-            Paragraph(nombre,                   estilo(9)),
-            Paragraph(str(qty),                 estilo(9, align=TA_RIGHT)),
-            Paragraph(fmt(precio),              estilo(9, align=TA_RIGHT)),
-            Paragraph("0%",                     estilo(9, align=TA_RIGHT)),
-            Paragraph(fmt(subtotal),            estilo(9, align=TA_RIGHT)),
-        ])
+        nombre   = item.get("nombre", item.get("desc", item.get("descripcion", "")))
+        items_html += f"""
+      <tr>
+        <td class="num">{i + 1}</td>
+        <td>{item.get("codigo", "")}</td>
+        <td>{nombre}</td>
+        <td class="right">{qty}</td>
+        <td class="right">{fmt(precio)}</td>
+        <td class="right">{item.get("descuento", 0)}%</td>
+        <td class="right">{fmt(subtotal)}</td>
+      </tr>"""
 
-    tabla_items = Table(
-        items_rows,
-        colWidths=[10*mm, 18*mm, 80*mm, 15*mm, 25*mm, 15*mm, 23*mm],
-    )
-    tabla_items.setStyle(TableStyle([
-        ("BACKGROUND",     (0, 0), (-1, 0),  COLOR_HEADER),
-        ("TEXTCOLOR",      (0, 0), (-1, 0),  colors.white),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fafafa")]),
-        ("GRID",           (0, 0), (-1, -1), 0.5, COLOR_BORDE),
-        ("PADDING",        (0, 0), (-1, -1), 4),
-        ("VALIGN",         (0, 0), (-1, -1), "MIDDLE"),
-    ]))
-    elementos.append(tabla_items)
-    elementos.append(Spacer(1, 6))
+    # ── Totales ───────────────────────────────────────────────────────────────
+    if es_exenta:
+        totales_html = f"""
+    <div class="total-row"><span class="total-label">MONTO NETO $</span><span>$0</span></div>
+    <div class="total-row"><span class="total-label">MONTO EXENTO $</span><span>{fmt(neto_exento)}</span></div>
+    <div class="total-row"><span class="total-label">I.V.A. 19% $</span>
+      <span style="font-size:9px;font-weight:bold;color:#1a56db;background:#e8f0fe;
+                   border:1px solid #a8c0f8;border-radius:4px;padding:1px 6px;">EXENTO</span></div>
+    <div class="total-row final"><span class="total-label">TOTAL $</span><span>{fmt(total)}</span></div>"""
+    else:
+        totales_html = f"""
+    <div class="total-row"><span class="total-label">MONTO NETO $</span><span>{fmt(neto)}</span></div>
+    <div class="total-row"><span class="total-label">I.V.A. 19% $</span><span>{fmt(iva)}</span></div>
+    <div class="total-row final"><span class="total-label">TOTAL $</span><span>{fmt(total)}</span></div>"""
 
-    # ── 5. TOTALES alineados a la derecha ─────────────────────────────────────
-    totales_rows = [
-        [Paragraph("MONTO NETO $",  estilo(9, color=COLOR_OSCURO)), Paragraph(fmt(neto),  estilo(9, align=TA_RIGHT))],
-        [Paragraph("I.V.A. 19% $",  estilo(9, color=COLOR_OSCURO)), Paragraph(fmt(iva),   estilo(9, align=TA_RIGHT))],
-        [Paragraph("TOTAL $",        estilo(11, bold=True)),          Paragraph(fmt(total), estilo(11, bold=True, align=TA_RIGHT))],
-    ]
-    tabla_totales = Table(totales_rows, colWidths=[30*mm, 30*mm], hAlign="RIGHT")
-    tabla_totales.setStyle(TableStyle([
-        ("GRID",      (0, 0), (-1, -2), 0.5, COLOR_BORDE),
-        ("LINEABOVE", (0, -1), (-1, -1), 2, colors.black),
-        ("LINEBELOW", (0, -1), (-1, -1), 2, colors.black),
-        ("PADDING",   (0, 0),  (-1, -1), 4),
-        ("ALIGN",     (1, 0),  (1, -1),  "RIGHT"),
-    ]))
-    elementos.append(tabla_totales)
-    elementos.append(Spacer(1, 12))
+    # ── Header izquierdo — logo si existe, texto si no ───────────────────────
+    if logo_base64:
+        header_izq = f"""
+      <div style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;">
+        <img src="{logo_base64}"
+             style="width:{logo_ancho}px;height:auto;max-height:90px;object-fit:contain;" />
+        <div style="margin-top:6px;">
+          <div class="emisor-nombre">{empresa_nombre}</div>
+          <div class="emisor-datos">
+            Giro: {empresa.giro or "—"}<br/>
+            {empresa.direccion or ""} - {empresa_comuna} - {empresa_ciudad}<br/>
+            {"Tel: " + empresa_tel if empresa_tel else ""}
+          </div>
+        </div>
+      </div>"""
+    else:
+        header_izq = f"""
+      <div class="emisor-rut">R.U.T. {empresa.rut}</div>
+      <div class="emisor-tipo">{tipo_label}</div>
+      <div class="emisor-num">N° {folio_str}</div>
+      <div class="sii-logo">S.I.I. — {empresa_ciudad}</div><br/>
+      <div class="emisor-nombre">{empresa_nombre}</div>
+      <div class="emisor-datos">
+        Giro: {empresa.giro or "—"}<br/>
+        {empresa.direccion or ""} - {empresa_comuna} - {empresa_ciudad}<br/>
+        {"Tel: " + empresa_tel if empresa_tel else ""}
+      </div>"""
 
-    # ── 6. TIMBRE ELECTRÓNICO ─────────────────────────────────────────────────
-    elementos.append(HRFlowable(width="100%", thickness=2, color=colors.black, spaceAfter=6))
-    timbre_data = [[
-        Table([
-            [Paragraph("TIMBRE ELECTRÓNICO SII", estilo(8, bold=True))],
-            [Paragraph("Verifique documento en: www.sii.cl", estilo(8, color=COLOR_MUTED))],
-        ], colWidths=[120*mm]),
-        Table([
-            [Paragraph(tipo_label,             estilo(8, align=TA_RIGHT))],
-            [Paragraph(f"N° {folio_str}",      estilo(8, align=TA_RIGHT))],
-            [Paragraph(f"Emisión: {fecha_emision}", estilo(8, align=TA_RIGHT))],
-            [Paragraph(f"RUT: {empresa_rut}",  estilo(8, align=TA_RIGHT))],
-        ], colWidths=[66*mm]),
-    ]]
-    tabla_timbre = Table(timbre_data, colWidths=[120*mm, 66*mm])
-    tabla_timbre.setStyle(TableStyle([
-        ("VALIGN",  (0, 0), (-1, -1), "TOP"),
-        ("PADDING", (0, 0), (-1, -1), 0),
-    ]))
-    elementos.append(tabla_timbre)
+    return f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8">
+<title>{tipo_label} N° {doc.numero}</title>
+<style>
+  *{{margin:0;padding:0;box-sizing:border-box}}
+  body{{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#000;background:#fff}}
+  .page{{width:210mm;min-height:297mm;padding:12mm;position:relative}}
+  .header{{display:flex;justify-content:space-between;align-items:flex-start;
+           margin-bottom:8px;border-bottom:2px solid #000;padding-bottom:8px}}
+  .header-left{{flex:1}}
+  .emisor-rut{{font-size:14px;font-weight:bold;margin-bottom:2px}}
+  .emisor-tipo{{font-size:18px;font-weight:bold;margin-bottom:2px}}
+  .emisor-num{{font-size:13px;font-weight:bold;color:#333;margin-bottom:4px}}
+  .sii-logo{{font-size:10px;color:#555;margin-bottom:4px}}
+  .emisor-nombre{{font-size:13px;font-weight:bold;margin-bottom:2px}}
+  .emisor-datos{{font-size:10px;color:#333;line-height:1.5}}
+  .doc-box{{border:2px solid {color_doc};border-radius:4px;padding:8px 14px;
+            text-align:center;min-width:160px}}
+  .doc-box-rut{{font-size:11px;font-weight:bold;color:{color_doc};
+                margin-bottom:4px;letter-spacing:0.3px}}
+  .doc-box-tipo{{font-size:12px;font-weight:bold;color:{color_doc};margin-bottom:4px}}
+  .doc-box-num{{font-size:22px;font-weight:bold;color:{color_doc}}}
+  .receptor-section{{background:#f5f5f5;border:1px solid #ddd;border-radius:3px;
+                     padding:8px 10px;margin-bottom:10px}}
+  .receptor-grid{{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px}}
+  .r-field{{display:flex;gap:4px;align-items:baseline}}
+  .r-label{{font-size:9px;font-weight:bold;text-transform:uppercase;
+            color:#666;white-space:nowrap}}
+  .r-val{{font-size:11px;font-weight:600;border-bottom:1px solid #ccc;
+          flex:1;min-width:0;word-break:break-all}}
+  .r-full{{grid-column:1/-1}}
+  .items-table{{width:100%;border-collapse:collapse;margin-bottom:10px}}
+  .items-table th{{background:#333;color:#fff;font-size:9px;font-weight:bold;
+                   text-transform:uppercase;padding:5px 6px;text-align:left}}
+  .items-table th.right{{text-align:right}}
+  .items-table td{{padding:5px 6px;font-size:10px;border-bottom:1px solid #eee}}
+  .items-table td.right{{text-align:right}}
+  .items-table tr:nth-child(even) td{{background:#fafafa}}
+  .items-table .num{{width:30px;text-align:center}}
+  .totales-wrap{{display:flex;justify-content:flex-end;margin-bottom:12px}}
+  .totales-box{{width:220px}}
+  .total-row{{display:flex;justify-content:space-between;padding:3px 0;
+              font-size:11px;border-bottom:1px solid #eee}}
+  .total-row.final{{font-size:13px;font-weight:bold;
+                    border-bottom:2px solid #000;padding:5px 0}}
+  .total-label{{color:#333}}
+  .timbre-section{{border-top:2px solid #000;padding-top:8px;
+                   display:flex;justify-content:space-between;align-items:flex-start}}
+  .timbre-left{{flex:1}}
+  .timbre-title{{font-size:9px;font-weight:bold;text-transform:uppercase;margin-bottom:4px}}
+  .timbre-sii{{font-size:9px;color:#555}}
+  .timbre-right{{text-align:right;font-size:9px}}
+  .footer{{margin-top:20px;border-top:1px solid #ccc;padding-top:6px;
+           font-size:8px;color:#999;text-align:center}}
+</style></head><body>
+<div class="page">
+  <div class="header">
+    <div class="header-left">{header_izq}</div>
+    <div class="doc-box">
+      <div class="doc-box-rut">R.U.T. {empresa.rut}</div>
+      <div class="doc-box-tipo">{tipo_label}</div>
+      <div class="doc-box-num">N° {folio_str}</div>
+    </div>
+  </div>
+  <div class="receptor-section">
+    <div class="receptor-grid">
+      <div class="r-field r-full">
+        <span class="r-label">SEÑOR(ES):</span>
+        <span class="r-val">{doc.receptor_nombre or ""}</span>
+      </div>
+      <div class="r-field">
+        <span class="r-label">R.U.T.:</span>
+        <span class="r-val">{doc.receptor_rut or ""}</span>
+      </div>
+      <div class="r-field">
+        <span class="r-label">GIRO:</span>
+        <span class="r-val">{doc.receptor_giro or ""}</span>
+      </div>
+      <div class="r-field r-full">
+        <span class="r-label">DIRECCIÓN:</span>
+        <span class="r-val">{doc.receptor_direccion or ""}</span>
+      </div>
+      <div class="r-field">
+        <span class="r-label">FECHA EMISIÓN:</span>
+        <span class="r-val">{fecha_str}</span>
+      </div>
+      <div class="r-field">
+        <span class="r-label">CONDICIÓN PAGO:</span>
+        <span class="r-val">{cond_pago}</span>
+      </div>
+    </div>
+  </div>
+  <table class="items-table">
+    <thead><tr>
+      <th class="num">N°</th><th>Codigo</th><th>Descripcion</th>
+      <th class="right">Cant.</th><th class="right">Precio Unit.</th>
+      <th class="right">%Desc.</th><th class="right">Valor</th>
+    </tr></thead>
+    <tbody>{items_html}</tbody>
+  </table>
+  <div class="totales-wrap"><div class="totales-box">{totales_html}</div></div>
+  <div class="timbre-section">
+    <div class="timbre-left">
+      <div class="timbre-title">Timbre Electrónico SII</div>
+      <div class="timbre-sii">Verifique documento en: www.sii.cl</div>
+    </div>
+    <div class="timbre-right">
+      {tipo_label}<br/>N° {folio_str}<br/>
+      Emisión: {fecha_str}<br/>RUT: {empresa.rut}
+    </div>
+  </div>
+  <div class="footer">Generado con YeparDTE · by YeparSolutions · yepardte.yeparsolutions.com</div>
+</div></body></html>"""
 
-    # ── 7. FOOTER ─────────────────────────────────────────────────────────────
-    elementos.append(Spacer(1, 8))
-    elementos.append(HRFlowable(width="100%", thickness=0.5, color=COLOR_BORDE))
-    elementos.append(Spacer(1, 3))
-    elementos.append(Paragraph(
-        "Generado con YeparDTE · by YeparSolutions · yepardte.yeparsolutions.com",
-        estilo(7, color=colors.HexColor("#999999"), align=TA_CENTER)
-    ))
 
-    doc_pdf.build(elementos)
-    return buffer.getvalue()
+def generar_pdf_documento(doc, empresa) -> bytes:
+    """
+    Genera el PDF del DTE con weasyprint usando el mismo HTML que el frontend.
+    Incluye logo si la empresa lo tiene guardado en la BD.
+    """
+    # Obtener logo desde la BD si existe
+    logo_base64 = None
+    logo_ancho  = 70
+    if empresa.logo:
+        mime = "image/png"
+        if empresa.logo[:2] == b"\xff\xd8":
+            mime = "image/jpeg"
+        elif b"<svg" in empresa.logo[:200]:
+            mime = "image/svg+xml"
+        elif empresa.logo[:4] == b"RIFF":
+            mime = "image/webp"
+        logo_base64 = f"data:{mime};base64,{base64.b64encode(empresa.logo).decode()}"
+        logo_ancho  = getattr(empresa, "logo_ancho", 70) or 70
+
+    html = _html_carta_dte(doc, empresa, logo_base64, logo_ancho)
+
+    try:
+        from weasyprint import HTML as WeasyprintHTML
+        return WeasyprintHTML(string=html).write_pdf()
+    except ImportError:
+        raise RuntimeError("weasyprint no instalado. Agrega 'weasyprint' a requirements.txt")
+    except Exception as e:
+        raise RuntimeError(f"Error generando PDF con weasyprint: {e}")
 
 
-# ── Templates HTML ────────────────────────────────────────────────────────────
+# ── Templates HTML de email ───────────────────────────────────────────────────
 
 def template_codigo_verificacion(nombre: str, codigo: str) -> str:
     logo_url    = f"{FRONTEND_URL}/logo-1200x520.png"
