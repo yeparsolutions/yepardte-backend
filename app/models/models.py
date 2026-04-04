@@ -29,7 +29,7 @@ class Empresa(Base):
     firma_vencimiento: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     caf_boleta: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
-    caf_boleta_exenta: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)   # CAF Tipo 41
+    caf_boleta_exenta: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     caf_factura: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
     plan: Mapped[str] = mapped_column(String(20), default="gratuito")
@@ -39,6 +39,13 @@ class Empresa(Base):
     tributario_completo: Mapped[bool] = mapped_column(Boolean, default=False)
     activo: Mapped[bool] = mapped_column(Boolean, default=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+    # ── Logo de la empresa ────────────────────────────────────────────────────
+    # Analogía: el membrete impreso en el papel de la empresa —
+    # aparece en el encabezado de todas las boletas y facturas.
+    # logo_ancho controla el tamaño en px dentro del PDF (default 70px)
+    logo: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    logo_ancho: Mapped[int] = mapped_column(Integer, default=70)
 
     usuarios: Mapped[list["Usuario"]] = relationship("Usuario", back_populates="empresa", cascade="all, delete-orphan")
     documentos: Mapped[list["Documento"]] = relationship("Documento", back_populates="empresa", cascade="all, delete-orphan")
@@ -93,7 +100,7 @@ class Documento(Base):
     receptor_giro: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
     monto_neto: Mapped[int] = mapped_column(BigInteger, default=0)
-    monto_exento: Mapped[int] = mapped_column(BigInteger, default=0)   # Monto exento Tipo 41
+    monto_exento: Mapped[int] = mapped_column(BigInteger, default=0)
     monto_iva: Mapped[int] = mapped_column(BigInteger, default=0)
     monto_total: Mapped[int] = mapped_column(BigInteger, default=0)
 
