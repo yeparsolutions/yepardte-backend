@@ -95,11 +95,19 @@ def _html_carta_dte(doc, empresa, logo_base64: str | None, logo_ancho: int) -> s
 
     # ── Header izquierdo: logo o texto ───────────────────────────────────────
     if logo_base64:
-        header_izq = f"""<img src="{logo_base64}" width="{logo_ancho}" style="display:block;margin-bottom:6px;" /><br/>
-        <b style="font-size:13px;">{empresa_nombre}</b><br/>
-        <span style="font-size:10px;color:#333;">Giro: {empresa.giro or "—"}</span><br/>
-        <span style="font-size:10px;color:#333;">{empresa.direccion or ""} - {empresa_comuna} - {empresa_ciudad}</span>
-        {"<br/><span style=\"font-size:10px;\">Tel: " + empresa_tel + "</span>" if empresa_tel else ""}"""
+        # weasyprint no respeta width= como atributo en SVG
+        # el div contenedor fija el espacio y evita que el SVG se agrande
+        header_izq = f"""<table cellpadding="0" cellspacing="0"><tr><td>
+          <div style="width:{logo_ancho}px;height:80px;overflow:hidden;">
+            <img src="{logo_base64}"
+                 style="width:{logo_ancho}px;height:80px;object-fit:contain;display:block;" />
+          </div>
+          <br/>
+          <b style="font-size:13px;">{empresa_nombre}</b><br/>
+          <span style="font-size:10px;color:#333;">Giro: {empresa.giro or "—"}</span><br/>
+          <span style="font-size:10px;color:#333;">{empresa.direccion or ""} - {empresa_comuna} - {empresa_ciudad}</span>
+          {"<br/><span style=\"font-size:10px;\">Tel: " + empresa_tel + "</span>" if empresa_tel else ""}
+        </td></tr></table>"""
     else:
         header_izq = f"""<span style="font-size:14px;font-weight:bold;">R.U.T. {empresa.rut}</span><br/>
         <span style="font-size:18px;font-weight:bold;">{tipo_label}</span><br/>
