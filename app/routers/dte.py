@@ -1,5 +1,6 @@
 # app/routers/dte.py v4 — soporte Tipo 41 (boleta exenta)
 import json
+import logging
 import secrets
 import hashlib
 import hmac
@@ -315,6 +316,18 @@ async def enviar_documento_email(
     token     = _generar_token_pdf(doc_id)
     fecha_fmt = doc.fecha.strftime("%d/%m/%Y")
 
+    # ── Generar PDF adjunto — mismo HTML que la app ──────────────────────────
+    # Analogía: antes de meter la carta en el sobre se imprime en la misma
+    # imprenta que la app — el receptor recibe exactamente lo que ve el usuario.
+    adjuntos = []
+    try:
+        pdf_bytes  = generar_pdf_documento(doc, empresa)
+        nombre_pdf = f"{doc.tipo}-{doc.numero}.pdf".replace(" ", "_")
+        adjuntos   = [{"filename": nombre_pdf, "content": pdf_bytes}]
+    except Exception as e:
+        logging.warning(f"[DTE] PDF adjunto falló para {doc_id}: {e}")
+        # Continúa sin adjunto — el email se envía igual con el botón de descarga
+
     ok = enviar_email(
         destinatario=doc.receptor_email,
         asunto=f"{doc.tipo} {doc.numero} — {empresa.nombre}",
@@ -329,6 +342,7 @@ async def enviar_documento_email(
             doc_id=doc_id,
             token=token,
         ),
+        adjuntos=adjuntos,
     )
 
     if not ok:
