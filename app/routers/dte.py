@@ -13,7 +13,7 @@ from app.models.models import Documento, Empresa, Usuario
 from app.schemas.schemas import EmitirDocumento
 from app.services.dtecore import dtecore
 from app.services.planes import PLANES
-from app.services.email_service import enviar_email, template_documento_email
+from app.services.email_service import enviar_email, template_documento_email, generar_pdf_documento
 from datetime import datetime, timezone, timedelta
 import os
 import uuid
