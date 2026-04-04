@@ -4,13 +4,14 @@ import logging
 import secrets
 import hashlib
 import hmac
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
 from app.core.deps import get_current_user, get_empresa
 from app.models.models import Documento, Empresa, Usuario
 from app.schemas.schemas import EmitirDocumento
+from pydantic import BaseModel
 from app.services.dtecore import dtecore
 from app.services.planes import PLANES
 from app.services.email_service import enviar_email, template_documento_email, generar_pdf_documento
@@ -295,9 +296,13 @@ async def historial(
 
 # ── Rutas específicas ANTES de /{doc_id} ──────────────────────────────────────
 
+class EnviarEmailBody(BaseModel):
+    html_documento: str | None = None  # HTML carta generado por el frontend
+
 @router.post("/{doc_id}/enviar-email")
 async def enviar_documento_email(
     doc_id: str,
+    body: EnviarEmailBody = Body(default=EnviarEmailBody()),
     user: Usuario = Depends(get_current_user),
     empresa: Empresa = Depends(get_empresa),
     db: AsyncSession = Depends(get_db),
@@ -316,24 +321,23 @@ async def enviar_documento_email(
     token     = _generar_token_pdf(doc_id)
     fecha_fmt = doc.fecha.strftime("%d/%m/%Y")
 
-    # ── Obtener PDF llamando al propio endpoint pdf-publico vía httpx ──────────
-    # Analogía: el servidor se hace pasar por un cliente y descarga su propio
-    # PDF — usa el mismo generador que el botón en la app, sin librerías extra.
+    # ── Generar PDF adjunto ───────────────────────────────────────────────────
+    # Analogía: el frontend genera el "original" y se lo pasa al servidor
+    # para meterlo en el sobre — así el PDF del email es idéntico al de la app.
     adjuntos = []
     try:
-        import httpx as _httpx
-        _backend = os.getenv("BACKEND_URL", "http://localhost:8000")
-        _pdf_url = f"{_backend}/api/dte/{doc_id}/pdf-publico?token={token}"
-        async with _httpx.AsyncClient(timeout=30.0) as _client:
-            _resp = await _client.get(_pdf_url)
-        if _resp.status_code == 200:
-            nombre_pdf = f"{doc.tipo}-{doc.numero}.pdf".replace(" ", "_")
-            adjuntos   = [{"filename": nombre_pdf, "content": _resp.content}]
+        html_para_pdf = body.html_documento or generar_pdf_documento.__module__
+        if body.html_documento:
+            # El frontend mandó el HTML carta ya generado — convertir a PDF
+            from weasyprint import HTML as WeasyprintHTML
+            pdf_bytes  = WeasyprintHTML(string=body.html_documento).write_pdf()
         else:
-            logging.warning(f"[DTE] pdf-publico retornó {_resp.status_code} para {doc_id}")
+            # Fallback: generar con el HTML del backend (tablas, compatible weasyprint)
+            pdf_bytes = generar_pdf_documento(doc, empresa)
+        nombre_pdf = f"{doc.tipo}-{doc.numero}.pdf".replace(" ", "_")
+        adjuntos   = [{"filename": nombre_pdf, "content": pdf_bytes}]
     except Exception as e:
-        logging.warning(f"[DTE] No se pudo obtener PDF adjunto para {doc_id}: {e}")
-        # Continúa sin adjunto — el email se envía igual con el botón de descarga
+        logging.warning(f"[DTE] PDF adjunto falló para {doc_id}: {e}")
 
     ok = enviar_email(
         destinatario=doc.receptor_email,
