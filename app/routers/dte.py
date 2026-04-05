@@ -264,12 +264,16 @@ async def estadisticas(
 async def historial(
     tipo: str | None = None,
     estado: str | None = None,
+    desde: str | None = None,   # YYYY-MM-DD — filtro de fecha inicio
+    hasta: str | None = None,   # YYYY-MM-DD — filtro de fecha fin
     page: int = 1,
     limit: int = 20,
     user: Usuario = Depends(get_current_user),
     empresa: Empresa = Depends(get_empresa),
     db: AsyncSession = Depends(get_db),
 ):
+    from datetime import date, timedelta
+
     query = select(Documento).where(Documento.empresa_id == empresa.id)
     if user.rol == "vendedor":
         query = query.where(Documento.vendedor_id == user.id)
@@ -278,12 +282,31 @@ async def historial(
     if estado:
         query = query.where(Documento.estado == estado)
 
+    # Filtros de fecha para el módulo de finanzas
+    if desde:
+        try:
+            d_desde = datetime.strptime(desde, "%Y-%m-%d").replace(
+                hour=0, minute=0, second=0, tzinfo=timezone.utc
+            )
+            query = query.where(Documento.fecha >= d_desde)
+        except ValueError:
+            pass
+    if hasta:
+        try:
+            d_hasta = datetime.strptime(hasta, "%Y-%m-%d").replace(
+                hour=23, minute=59, second=59, tzinfo=timezone.utc
+            )
+            query = query.where(Documento.fecha <= d_hasta)
+        except ValueError:
+            pass
+
+    # Count total con los mismos filtros
+    count_q = query.with_only_columns(func.count()).order_by(None)
+    total   = (await db.execute(count_q)).scalar()
+
     query  = query.order_by(Documento.fecha.desc()).offset((page - 1) * limit).limit(limit)
     result = await db.execute(query)
     docs   = result.scalars().all()
-
-    count_q = select(func.count()).select_from(Documento).where(Documento.empresa_id == empresa.id)
-    total   = (await db.execute(count_q)).scalar()
 
     return {
         "documentos": [{
@@ -294,6 +317,9 @@ async def historial(
             "receptor": d.receptor_nombre,
             "rut":      d.receptor_rut,
             "monto":    d.monto_total,
+            "neto":     d.monto_neto,
+            "iva":      d.monto_iva,
+            "exento":   d.monto_exento,
             "estado":   d.estado,
             "fecha":    d.fecha.isoformat(),
             "track_id": d.track_id,
