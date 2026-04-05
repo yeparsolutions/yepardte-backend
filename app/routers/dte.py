@@ -115,6 +115,14 @@ async def emitir(
         tipo_label = "Boleta Exenta"
     elif tipo_code_real == "39":
         tipo_label = "Boleta"
+    elif tipo_code_real == "33" and es_exento:
+        tipo_label = "Factura Exenta"
+    elif tipo_code_real == "61":
+        tipo_label = "Nota de Crédito"
+    elif tipo_code_real == "56":
+        tipo_label = "Nota de Débito"
+    elif tipo_code_real == "52":
+        tipo_label = "Guía de Despacho"
     else:
         tipo_label = "Factura"
 
