@@ -321,17 +321,10 @@ async def enviar_documento_email(
     token     = _generar_token_pdf(doc_id)
     fecha_fmt = doc.fecha.strftime("%d/%m/%Y")
 
-    # ── Generar PDF adjunto ───────────────────────────────────────────────────
-    # Siempre usa el HTML de tablas del backend (compatible weasyprint).
-    # El frontend solo provee datos — el backend controla el formato del PDF.
-    adjuntos = []
-    try:
-        pdf_bytes  = generar_pdf_documento(doc, empresa)
-        nombre_pdf = f"{doc.tipo}-{doc.numero}.pdf".replace(" ", "_")
-        adjuntos   = [{"filename": nombre_pdf, "content": pdf_bytes}]
-    except Exception as e:
-        logging.warning(f"[DTE] PDF adjunto falló para {doc_id}: {e}")
-
+    # ── Enviar email con botón que abre el documento en el browser ───────────
+    # Sin adjunto (plan free Resend no adjunta).
+    # El botón lleva al endpoint pdf-publico que devuelve HTML con auto-print —
+    # el browser del receptor renderiza el documento idéntico al de la app.
     ok = enviar_email(
         destinatario=doc.receptor_email,
         asunto=f"{doc.tipo} {doc.numero} — {empresa.nombre}",
@@ -346,7 +339,6 @@ async def enviar_documento_email(
             doc_id=doc_id,
             token=token,
         ),
-        adjuntos=adjuntos,
     )
 
     if not ok:
@@ -361,6 +353,12 @@ async def pdf_publico(
     token: str,
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Devuelve una página HTML que se auto-imprime en el browser del receptor.
+    El browser renderiza el documento igual que la app — sin weasyprint.
+    Analogía: en vez de mandar una fotocopia, mandamos al receptor a la
+    fotocopiadora original con un pase de un solo uso.
+    """
     if not _verificar_token_pdf(doc_id, token):
         raise HTTPException(status_code=403, detail="Token inválido")
 
@@ -374,16 +372,38 @@ async def pdf_publico(
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
 
-    try:
-        pdf_bytes = generar_pdf_documento(doc, empresa)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generando PDF: {str(e)}")
+    # Generar HTML con tablas (igual que la app) y auto-imprimir en el browser
+    from app.services.email_service import _html_carta_dte
+    import base64
 
-    nombre_archivo = f"{doc.tipo}-{doc.numero}.pdf".replace(" ", "_")
+    logo_base64 = None
+    logo_ancho  = 70
+    if empresa.logo:
+        mime = "image/png"
+        if empresa.logo[:2] == b"\xff\xd8": mime = "image/jpeg"
+        elif b"<svg" in empresa.logo[:200]:   mime = "image/svg+xml"
+        elif empresa.logo[:4] == b"RIFF":     mime = "image/webp"
+        logo_base64 = f"data:{mime};base64,{base64.b64encode(empresa.logo).decode()}"
+        logo_ancho  = getattr(empresa, "logo_ancho", 70) or 70
+
+    html_doc = _html_carta_dte(doc, empresa, logo_base64, logo_ancho)
+
+    # Inyectar script de auto-print al cargar la página
+    html_con_print = html_doc.replace(
+        "</body></html>",
+        """<script>
+  window.onload = function() {
+    document.title = document.querySelector('title') ? document.querySelector('title').text : 'Documento';
+    setTimeout(function(){ window.print(); }, 800);
+  };
+</script>
+</body></html>"""
+    )
+
     return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{nombre_archivo}"'},
+        content=html_con_print,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
     )
 
 
