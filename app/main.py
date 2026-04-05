@@ -14,11 +14,23 @@ app = FastAPI(
 )
 
 # ── CORS ──────────────────────────────────────────────────────
+# Analogía: la lista de invitados en la puerta —
+# solo los dominios autorizados pueden hacer peticiones con credenciales.
+# allow_origins=["*"] + allow_credentials=True NO es válido en CORS,
+# por eso especificamos los dominios exactos.
+ALLOWED_ORIGINS = [
+    "https://yepardte.yeparsolutions.com",   # frontend producción
+    "https://www.yepardte.yeparsolutions.com",
+    "http://localhost:5173",                  # Vite dev local
+    "http://localhost:3000",                  # alternativa dev
+    "http://127.0.0.1:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
 )
 
@@ -36,46 +48,8 @@ app.include_router(clientes.router)
 async def health():
     return {"ok": True, "service": "YeparDTE API"}
 
-# ── Startup ───────────────────────────────────────────────────
+# ── Crear tablas al iniciar ───────────────────────────────────
 @app.on_event("startup")
 async def startup():
-    print("=== STARTUP v5 - migración columnas nuevas ===")
-
     async with engine.begin() as conn:
-        # Crear tablas nuevas que no existan
         await conn.run_sync(Base.metadata.create_all)
-
-        # Migración inline: agregar columnas nuevas si no existen
-        # (create_all no altera tablas existentes, hay que hacerlo manual)
-        migraciones = [
-            # Documento: monto_exento
-            """
-            DO $$ BEGIN
-                ALTER TABLE documentos ADD COLUMN monto_exento BIGINT DEFAULT 0;
-            EXCEPTION WHEN duplicate_column THEN NULL;
-            END $$;
-            """,
-            # Documento: condicion_pago
-            """
-            DO $$ BEGIN
-                ALTER TABLE documentos ADD COLUMN condicion_pago VARCHAR(50) DEFAULT 'Contado';
-            EXCEPTION WHEN duplicate_column THEN NULL;
-            END $$;
-            """,
-            # Empresa: caf_boleta_exenta
-            """
-            DO $$ BEGIN
-                ALTER TABLE empresas ADD COLUMN caf_boleta_exenta BYTEA;
-            EXCEPTION WHEN duplicate_column THEN NULL;
-            END $$;
-            """,
-        ]
-
-        for sql in migraciones:
-            try:
-                await conn.execute(__import__('sqlalchemy').text(sql))
-                print(f"Migración OK: {sql.strip()[:60]}…")
-            except Exception as e:
-                print(f"Migración skip: {e}")
-
-    print("=== STARTUP completo ===")
