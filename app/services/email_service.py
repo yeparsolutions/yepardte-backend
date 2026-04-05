@@ -365,7 +365,7 @@ def template_documento_email(
          style="display:inline-block;background:#00C77B;color:#ffffff;
                 font-size:15px;font-weight:700;text-decoration:none;
                 padding:14px 32px;border-radius:10px;">
-        ⬇ Descargar documento PDF
+        📄 Ver y descargar documento
       </a>
     </div>
     """ if pdf_url else ""
