@@ -69,12 +69,17 @@ def _html_carta_dte(doc, empresa, logo_base64: str | None, logo_ancho: int) -> s
     else:
         items_list = []
 
-    es_exenta  = getattr(doc, "tipo_code", "") == "41"
-    es_boleta  = getattr(doc, "tipo_code", "") in ("39", "41") or doc.tipo in ("Boleta", "Boleta Exenta")
+    tipo_code  = getattr(doc, "tipo_code", "")
+    doc_tipo   = getattr(doc, "tipo", "")
+    es_exenta  = tipo_code == "41" or doc_tipo == "Boleta Exenta"
+    es_factura_exenta = tipo_code == "33" and doc_tipo in ("Factura Exenta",)
+    es_boleta  = tipo_code in ("39", "41") or doc_tipo in ("Boleta", "Boleta Exenta")
+
     tipo_label = (
-        "BOLETA EXENTA ELECTR\u00d3NICA" if es_exenta else
-        "BOLETA ELECTR\u00d3NICA"        if es_boleta else
-        "FACTURA ELECTR\u00d3NICA"
+        "BOLETA EXENTA ELECTRÓNICA"   if es_exenta else
+        "BOLETA ELECTRÓNICA"          if es_boleta else
+        "FACTURA EXENTA ELECTRÓNICA"  if es_factura_exenta else
+        "FACTURA ELECTRÓNICA"
     )
     color_doc   = "#1a56db" if es_boleta else "#c00"
     neto        = doc.monto_neto   or 0
