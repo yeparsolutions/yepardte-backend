@@ -11,7 +11,7 @@ PLANES: dict[str, dict] = {
         "docsLimit":         20,        # 20 documentos total
         "vendedoresLimit":   0,
         "excedentePorDoc":   0,         # sin cobro de excedentes
-        "tiposDoc":          ["Boleta", "Factura"],
+        "tiposDoc":          ["Boleta", "Boleta Exenta", "Factura", "Factura Exenta"],
         "descripcion":       "Para probar la plataforma",
     },
     "pro": {
@@ -20,7 +20,7 @@ PLANES: dict[str, dict] = {
         "docsLimit":         200,       # 200 folios incluidos
         "vendedoresLimit":   2,         # admin + 2 usuarios
         "excedentePorDoc":   20,        # $20 por folio adicional (IVA incluido)
-        "tiposDoc":          ["Boleta", "Factura"],
+        "tiposDoc":          ["Boleta", "Boleta Exenta", "Factura", "Factura Exenta"],
         "descripcion":       "Ideal para PYMES pequeñas",
     },
     "business": {
@@ -28,10 +28,12 @@ PLANES: dict[str, dict] = {
         "precio":            19990,     # IVA incluido
         "docsLimit":         1000,      # 1.000 folios incluidos
         "vendedoresLimit":   999999,    # multiusuario ilimitado
-        "excedentePorDoc":   15,        # $15 por folio adicional (IVA incluido)
+        "excedentePorDoc":   12,        # ~$10-$15 por folio adicional (IVA incluido)
         "tiposDoc":          [
             "Boleta",
+            "Boleta Exenta",
             "Factura",
+            "Factura Exenta",
             "Nota de Crédito",
             "Nota de Débito",
             "Guía de Despacho",
